@@ -679,12 +679,16 @@ export default function CasinoGameScreen() {
             <View style={styles.dealCenter}>
               <View style={{ flexDirection: 'row', marginBottom: 24 }}>
                 {dealtHands.north.map((card, idx) => (
-                  <CasinoCard key={idx} suit={card.suit} value={card.value} />
+                  <View key={idx} style={{ marginLeft: idx === 0 ? 0 : -32, zIndex: idx }}>
+                    {getCardBack()}
+                  </View>
                 ))}
               </View>
               <View style={{ flexDirection: 'row', marginBottom: 24 }}>
                 {dealtHands.south.map((card, idx) => (
-                  <CasinoCard key={idx} suit={card.suit} value={card.value} />
+                  <View key={idx} style={{ marginLeft: idx === 0 ? 0 : -32, zIndex: idx }}>
+                    {getCardBack()}
+                  </View>
                 ))}
               </View>
               <View style={{ alignItems: 'center' }}>
@@ -698,12 +702,15 @@ export default function CasinoGameScreen() {
               {/* Discard and stock piles at center */}
               <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
                 {/* Permanent facedown card at animation start position */}
-                <TouchableOpacity
-                  onPress={() => handleDraw('south')}
-                  style={{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }, { translateY: 0 }], zIndex: 50 }}
-                >
-                  {getCardBack()}
-                </TouchableOpacity>
+                <View style={{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }, { translateY: 0 }], zIndex: 50, alignItems: 'center' }}>
+                  <TouchableOpacity
+                    onPress={() => handleDraw('south')}
+                    style={{ marginBottom: 8 }}
+                  >
+                    {getCardBack()}
+                  </TouchableOpacity>
+                  <ThemedText style={styles.drawHintText}>Tap to Draw</ThemedText>
+                </View>
                 {/* Facedown card at center if toggled */}
                 {showCenterCard && (
                   <Animated.View
@@ -1073,5 +1080,12 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  drawHintText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '500',
+    opacity: 0.8,
+    textAlign: 'center',
   },
 });

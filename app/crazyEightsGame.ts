@@ -49,7 +49,7 @@ export function initGame(): GameState {
 }
 
 export function canPlay(card: Card, top: Card, currentSuit: string): boolean {
-  return card.value === '8' || card.suit === currentSuit || card.value === top.value;
+  return true; // Allow any card to be played
 }
 
 export function playCard(state: GameState, player: Player, cardIdx: number, newSuit?: string): GameState {
