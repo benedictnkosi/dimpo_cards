@@ -86,6 +86,13 @@ export function playCard(state: GameState, player: Player, cardIdx: number, newS
 }
 
 export function drawCard(state: GameState, player: Player): GameState {
+  console.log('[DRAW CARD details]', {
+    player,
+    stock: state.stock.length,
+    discard: state.discard.length,
+    winner: state.winner,
+  });
+  console.log('[BEFORE DRAW] player:', player, 'north:', state.hands.north, 'south:', state.hands.south);
   if (state.winner) return state;
   let stock = state.stock;
   let discard = state.discard;
@@ -97,11 +104,29 @@ export function drawCard(state: GameState, player: Player): GameState {
     discard = [discard[discard.length - 1]];
   }
   if (stock.length === 0) return state; // still empty, can't draw
-  const hand = [...state.hands[player], stock[0]];
-  const hands = { ...state.hands, [player]: hand };
+  
+  const drawnCard = stock[0];
+  const hand = [...state.hands[player], drawnCard];
+  console.log('[north hand]', ...state.hands['north']);
+  console.log('[south hand]', ...state.hands['south']);
+  let hands: { north: Card[]; south: Card[] };
+  if (player === 'north') {
+    hands = {
+      north: hand,
+      south: state.hands.south.slice(),
+    };
+  } else {
+    hands = {
+      north: state.hands.north.slice(),
+      south: hand,
+    };
+  }
+  console.log('[AFTER DRAW] player:', player, 'north:', hands.north, 'south:', hands.south);
   stock = stock.slice(1);
   // End turn after drawing: switch to the other player
-  return { ...state, hands, stock, discard, turn: player === 'south' ? 'north' : 'south' };
+  const newState: GameState = { ...state, hands, stock, discard, turn: player === 'south' ? 'north' : 'south' };
+  console.log('[FINAL STATE] hands:', newState.hands);
+  return newState;
 }
 
 export function hasPlayableCard(hand: Card[], top: Card, currentSuit: string): boolean {

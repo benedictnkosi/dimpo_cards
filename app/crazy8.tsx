@@ -69,26 +69,13 @@ function shuffle(deck: Card[]): Card[] {
 function isPlayersTurn(gameData: any, username: string): boolean {
   
   if (!gameData || !gameData.players || !username){
-    console.log('data missing');
    return false;
-  }else{
-    console.log('data is set');
   }
   if (gameData.turn === 'player1') {
     const isPlayer1 = gameData.players.player1?.name === username;
-    console.log('[IS PLAYERS TURN]', {
-      gameData,
-      username,
-      isPlayer1,
-    });
     return isPlayer1;
   } else if (gameData.turn === 'player2') {
     const isPlayer2 = gameData.players.player2?.name === username;
-    console.log('[IS PLAYERS TURN]', {
-      gameData,
-      username, 
-      isPlayer2,
-    });
     return isPlayer2;
   }
   return false;
@@ -138,6 +125,7 @@ export default function CasinoGameScreen() {
   }));
 
   const isMounted = useRef(true);
+  const isSyncingToFirebase = useRef(false);
 
   // Track previous discard card when discard pile changes (for opponent plays)
   const lastDiscardRef = useRef<Card | null>(null);
@@ -183,6 +171,9 @@ export default function CasinoGameScreen() {
         const gameData = docSnapshot.data();
         setFirebaseGameData(gameData);
         if (gameData && gameData.players) {
+          // Set syncing flag to prevent auto-sync during Firebase update
+          isSyncingToFirebase.current = true;
+          
           // Determine if current user is player1 or player2
           let isP1 = false;
           if (gameData.players.player1?.name && username && gameData.players.player1.name === username) {
@@ -214,14 +205,12 @@ export default function CasinoGameScreen() {
           const opponentPlayerKey = isP1 ? 'player2' : 'player1';
           const opponentData = gameData.players[opponentPlayerKey];
           if (opponentData && opponentData.lastCardPlayed) {
-            console.log('[OPPONENT] Last card played from opponent:', opponentData.lastCardPlayed);
             setOpponentLastPlayedCard(opponentData.lastCardPlayed);
           }
           
           // Clear opponent's played card when it becomes current player's turn
           const currentTurn = (gameData.turn === 'player1') === isP1 ? 'south' as Player : 'north' as Player;
           if (currentTurn === 'south' && opponentLastPlayedCard) {
-            console.log('[OPPONENT] Clearing played card - now player turn');
             setOpponentLastPlayedCard(null);
           }
           
@@ -230,26 +219,14 @@ export default function CasinoGameScreen() {
             const ownPlayerKey = isP1 ? 'player1' : 'player2';
             const ownData = gameData.players[ownPlayerKey];
             if (ownData && ownData.lastCardPlayed) {
-              console.log('[SELF] Clearing own lastCardPlayed - now opponent turn');
               // Clear the lastCardPlayed field for the current player
               const gameDocRef = doc(db, 'games', currentGameId);
               updateDoc(gameDocRef, {
                 [`players.${ownPlayerKey}.lastCardPlayed`]: null
               }).catch((err: any) => {
-                console.error('[SELF] Error clearing lastCardPlayed:', err);
               });
             }
           }
-          
-          console.log('[GAME DATA]', {
-            username,
-            gameDataTurn: gameData.turn,
-            player1: gameData.players.player1?.name,
-            player2: gameData.players.player2?.name,
-            isPlayer1: isP1,
-          });
-          console.log('[IS IT MY TURN?]', isPlayersTurn(gameData, username || ''));
-          
           setGame(newGameState);
           
           // Only set gamePhase to 'init' if both hands are empty, otherwise set to 'playing'
@@ -262,6 +239,11 @@ export default function CasinoGameScreen() {
             south: isP1 ? (gameData.players.player1?.name || 'Player 1') : (gameData.players.player2?.name || 'Player 2'),
             north: isP1 ? (gameData.players.player2?.name || 'Player 2') : (gameData.players.player1?.name || 'Player 1'),
           });
+          
+          // Clear syncing flag after a short delay
+          setTimeout(() => {
+            isSyncingToFirebase.current = false;
+          }, 200);
         }
       }
     });
@@ -269,24 +251,35 @@ export default function CasinoGameScreen() {
     return () => unsub();
   }, [currentGameId, username]);
 
+  // Auto-sync game state changes to Firebase
+  useEffect(() => {
+    if (!currentGameId || isPlayer1 === null || gamePhase !== 'playing' || isSyncingToFirebase.current) return;
+    
+    // Don't sync if this is the initial load from Firebase
+    const timeoutId = setTimeout(() => {
+      isSyncingToFirebase.current = true;
+      updateGameInFirebase(game).finally(() => {
+        isSyncingToFirebase.current = false;
+      });
+    }, 100);
+    
+    return () => clearTimeout(timeoutId);
+  }, [game, currentGameId, isPlayer1, gamePhase]);
+
   // Log all cards in discard pile on every render
   useEffect(() => {
-    console.log('[ALL CARDS IN DISCARD]', JSON.stringify(game.discard));
   }, [game.discard]);
 
   // Start new game
   async function handleStartNewGame() {
     try {
-      console.log('Deleting old games...');
       // Delete all existing games
       const gamesQuery = query(collection(db, 'games'));
       const gamesSnapshot = await getDocs(gamesQuery);
       
       const deletePromises = gamesSnapshot.docs.map(doc => deleteDoc(doc.ref));
       await Promise.all(deletePromises);
-      console.log(`Deleted ${gamesSnapshot.docs.length} old games`);
       
-      console.log('Creating new game...');
       const docRef = await addDoc(collection(db, 'games'), {
         status: 'waiting',
         createdAt: serverTimestamp(),
@@ -297,18 +290,15 @@ export default function CasinoGameScreen() {
           },
         },
       });
-      console.log('Game created with id:', docRef.id);
       setCurrentGameId(docRef.id);
       setScreen('game');
     } catch (err) {
-      console.error('Error creating game:', err);
     }
   }
 
   // Join game
   async function handleJoinGame(gameId: string) {
     try {
-      console.log('Joining game:', gameId);
       const gameDocRef = doc(db, 'games', gameId);
       // Only set player2 if not already set
       const gameSnap = await getDoc(gameDocRef);
@@ -327,18 +317,15 @@ export default function CasinoGameScreen() {
       setCurrentGameId(gameId);
       setScreen('game');
     } catch (err) {
-      console.error('Error joining game:', err);
     }
   }
 
   // Update game state in Firebase
   async function updateGameInFirebase(gameState: GameState, lastCardPlayed?: Card) {
     if (!currentGameId || isPlayer1 === null) {
-      console.log('[FIREBASE] Skipping update - missing currentGameId or isPlayer1');
       return;
     }
     try {
-      console.log('[FIREBASE] Updating game state...');
       const gameDocRef = doc(db, 'games', currentGameId);
       
       // Prepare the update data
@@ -365,22 +352,10 @@ export default function CasinoGameScreen() {
       if (lastCardPlayed) {
         const playerKey = isPlayer1 ? 'player1' : 'player2';
         updateData[`players.${playerKey}.lastCardPlayed`] = lastCardPlayed;
-        console.log('[FIREBASE] Adding lastCardPlayed to', playerKey, ':', lastCardPlayed);
       }
       
-      console.log('[UPDATE FIREBASE]', {
-        username,
-        isPlayer1,
-        updateTurn: updateData.turn,
-        player1: updateData.players.player1?.name,
-        player2: updateData.players.player2?.name,
-      });
-      
-      console.log('[FIREBASE] Update data prepared:', updateData);
       await updateDoc(gameDocRef, updateData);
-      console.log('[FIREBASE] Game state updated successfully');
     } catch (err) {
-      console.error('[FIREBASE] Error updating game in Firebase:', err);
       // Don't throw the error, just log it to prevent crashes
     }
   }
@@ -388,10 +363,8 @@ export default function CasinoGameScreen() {
   // Handle Deal button
   async function handleDeal() {
     try {
-      console.log('[DEAL] Starting deal process...');
       // Shuffle and prepare deck
       const deck = shuffle(cards as Card[]);
-      console.log('[DEAL] Deck shuffled, length:', deck.length);
       let north: Card[] = [];
       let south: Card[] = [];
       let stock: Card[] = [...deck];
@@ -421,7 +394,6 @@ export default function CasinoGameScreen() {
       } else {
         // After dealing, set up the rest of the game
         setTimeout(async () => {
-          console.log('[DEAL] Setting up discard pile...');
           // Start discard pile with a non-8 card
           let discard: Card[] = [];
           let top: Card | undefined;
@@ -445,15 +417,11 @@ export default function CasinoGameScreen() {
           
           // If still no card, create a default card (this shouldn't happen with a full deck)
           if (discard.length === 0) {
-            console.warn('No cards available for discard pile, using default card');
             discard = [{ suit: '♠', value: 'A' }];
           }
-          
-          console.log('[DEAL] Discard pile set up:', discard[0]);
           setDealtDiscard(discard);
           setDealtStock(stock.slice());
           setTimeout(async () => {
-            console.log('[DEAL] Creating final game state...');
             const newGameState: GameState = {
               hands: { north, south },
               stock,
@@ -463,19 +431,16 @@ export default function CasinoGameScreen() {
               winner: null,
               chooseSuit: false,
             };
-            console.log('[DEAL] Game state created, updating...');
             setGame(newGameState);
             setGamePhase('playing');
             // Update Firebase with the new game state (no card played during deal)
             await updateGameInFirebase(newGameState);
-            console.log('[DEAL] Deal process completed successfully');
           }, 400);
         }, 400);
       }
     }
     dealNext();
     } catch (err) {
-      console.error('[DEAL] Error during deal process:', err);
       // Reset to init phase on error
       setGamePhase('init');
     }
@@ -483,45 +448,21 @@ export default function CasinoGameScreen() {
 
   // Handle play for either player (with animation for south)
   async function handlePlay(player: Player, idx: number) {
-    console.log('[ACTION]', {
-      username,
-      isPlayer1,
-      gameTurn: game.turn,
-      playerNames,
-      // isPlayersTurn: isPlayersTurn(gameData, username),
-    });
-    
     if (gamePhase !== 'playing') {
-      console.log('[HANDLE_PLAY] Early return: gamePhase !== playing');
       return;
     }
-    
     if (game.turn !== player || game.winner !== null || game.chooseSuit) {
-      console.log('[HANDLE_PLAY] Early return: turn/winner/chooseSuit check failed', {
-        turn: game.turn,
-        player,
-        winner: game.winner,
-        chooseSuit: game.chooseSuit
-      });
       return;
     }
-    
     const card = game.hands[player][idx];
     const top = game.discard[game.discard.length - 1];
-    
     if (!canPlay(card, top, game.currentSuit)) {
-      console.log('[HANDLE_PLAY] Early return: cannot play card', { card, top, currentSuit: game.currentSuit });
       return;
     }
-
-    // LOG discard pile before play
-    console.log('[DISCARD BEFORE PLAY]', JSON.stringify(game.discard));
-    
     // Store the current top card as the previous discard card
     if (game.discard.length > 0) {
       setPreviousDiscardCard(game.discard[game.discard.length - 1]);
     }
-
     if (player === 'south') {
       setAnimatingCardIndex(idx);
       setAnimatingCard(card);
@@ -531,20 +472,12 @@ export default function CasinoGameScreen() {
           const discard = discardRef.current;
           if (!cardRef || !discard) {
             finishAnimation();
-            let newGame = playCard(game, player, idx);
-            if (newGame.chooseSuit) {
-              setChoosingSuit(true);
-            } else {
-              setGame(newGame);
-              updateGameInFirebase(newGame);
-            }
-            // LOG discard pile after play
-            console.log('[DISCARD AFTER PLAY]', JSON.stringify(newGame.discard));
+            setGame(prevGame => playCard(prevGame, player, idx));
+            // updateGameInFirebase should be called in a useEffect
             return;
           }
           cardRef.measureInWindow((x, y, width, height) => {
             discard.measureInWindow((dx, dy, dwidth, dheight) => {
-              console.log(`[SOUTH] attempt ${attempt}: card=(${x},${y}), discard=(${dx},${dy})`);
               if (
                 [x, y, dx, dy].some(v => typeof v !== 'number' || isNaN(v)) ||
                 (x === 0 && y === 0 && attempt < 5)
@@ -564,19 +497,10 @@ export default function CasinoGameScreen() {
         }
         setTimeout(() => tryMeasure(), 10);
       });
-
     } else {
       // fallback (should not happen)
-      let newGame = playCard(game, player, idx);
-      if (newGame.chooseSuit) {
-        setChoosingSuit(true);
-      } else {
-        setGame(newGame);
-        const playedCard = game.hands[player][idx];
-        await updateGameInFirebase(newGame, playedCard);
-      }
-      // LOG discard pile after play
-      console.log('[DISCARD AFTER PLAY]', JSON.stringify(newGame.discard));
+      setGame(prevGame => playCard(prevGame, player, idx));
+      // updateGameInFirebase should be called in a useEffect
     }
   }
 
@@ -590,12 +514,9 @@ export default function CasinoGameScreen() {
     if (gamePhase !== 'playing') return;
     const idx = game.hands[game.turn].findIndex(card => card.value === '8');
     if (idx === -1) return;
-    const newGame = playCard(game, game.turn, idx, suit);
-    setGame(newGame);
+    setGame(prevGame => playCard(prevGame, game.turn, idx, suit));
     setChoosingSuit(false);
-    // Update Firebase with the new game state and played card
-    const playedCard = game.hands[game.turn][idx];
-    await updateGameInFirebase(newGame, playedCard);
+    // updateGameInFirebase should be called in a useEffect
   }
 
   // Handle draw
@@ -603,14 +524,13 @@ export default function CasinoGameScreen() {
     // Only allow draw if it's the local player's turn
     if (gamePhase !== 'playing') return;
     if (game.winner !== null || game.chooseSuit) return;
-    // LOG discard pile before draw
-    console.log('[DISCARD BEFORE DRAW]', JSON.stringify(game.discard));
-    const newGame = drawCard(game, player);
-    setGame(newGame);
-    // LOG discard pile after draw
-    console.log('[DISCARD AFTER DRAW]', JSON.stringify(newGame.discard));
-    // Update Firebase with the new game state (no card played for draw)
-    await updateGameInFirebase(newGame);
+    // Compute the new game state after drawing a card
+    console.log('old game state', game);
+    const newGameState = drawCard(game, player);
+    console.log('new game state', newGameState);
+    setGame(newGameState);
+    // Immediately update Firebase with the new game state
+    await updateGameInFirebase(newGameState);
   }
 
   // Handle new game
@@ -625,15 +545,8 @@ export default function CasinoGameScreen() {
   // Helper for animation end
   function onPlayerCardAnimationEnd(player: Player, idx: number) {
     finishAnimation();
-    let newGame = playCard(game, player, idx);
-    if (newGame.chooseSuit) {
-      setChoosingSuit(true);
-    } else {
-      setGame(newGame);
-      // Pass the played card to Firebase
-      const playedCard = game.hands[player][idx];
-      updateGameInFirebase(newGame, playedCard);
-    }
+    setGame(prevGame => playCard(prevGame, player, idx));
+    // updateGameInFirebase should be called in a useEffect
   }
 
   // Ensure refs arrays match hand lengths
@@ -671,14 +584,6 @@ export default function CasinoGameScreen() {
     );
   }
 
-  console.log('[RENDER LOGIC]', {
-    username,
-    isPlayer1,
-    gameTurn: game.turn,
-    playerNames,
-    // If you have access to the original gameData, include it:
-    // isPlayersTurn: isPlayersTurn(gameData, username),
-  });
 
   return (
     <View style={{ flex: 1, position: 'relative' }}>
@@ -874,32 +779,12 @@ export default function CasinoGameScreen() {
               {/* Draw button for the current playing player (local user only) */}
               {(() => {
                 if (isPlayer1 !== null) {
-                  const isLocalTurn = firebaseGameData ? isPlayersTurn(firebaseGameData, username || '') : false;
-                  const localHand = isPlayer1 ? game.hands.south : game.hands.north;
-                  const canDraw =
-                    !game.chooseSuit &&
-                    game.stock.length > 0 &&
-                    game.winner === null;
-
-                  console.log('[DRAW BUTTON LOGIC]', {
-                    isPlayer1,
-                    gameTurn: game.turn,
-                    isLocalTurn,
-                    chooseSuit: game.chooseSuit,
-                    stock: game.stock.length,
-                    winner: game.winner,
-                    canDraw
-                  });
-
-                  
-                    // Determine the local player ('south' if isPlayer1, else 'north')
-                    const localPlayer: Player = isPlayer1 ? 'south' : 'north';
+                    // Always use 'south' for the local player
                     return (
-                      <TouchableOpacity onPress={() => handleDraw(localPlayer)} style={styles.drawBtn}>
+                      <TouchableOpacity onPress={() => handleDraw('south')} style={styles.drawBtn}>
                         <ThemedText style={styles.drawBtnText}>Draw</ThemedText>
                       </TouchableOpacity>
                     );
-                  
                 }
                 return null;
               })()}
