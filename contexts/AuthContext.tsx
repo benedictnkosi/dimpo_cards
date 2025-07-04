@@ -1,9 +1,11 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut as firebaseSignOut, onAuthStateChanged } from 'firebase/auth';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signInAnonymously, signOut as firebaseSignOut, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/config/firebase';
 import { useRouter, useSegments } from 'expo-router';
 import { initializeReadingLevel } from '@/services/database';
+import { addOrUpdatePlayer } from '@/services/playersService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface AuthUser {
   uid: string;
@@ -18,6 +20,7 @@ interface AuthContextType {
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<AuthUser>;
   signUp: (email: string, password: string) => Promise<AuthUser>;
+  signInAnonymously: () => Promise<AuthUser>;
   signOut: () => Promise<void>;
 }
 
@@ -26,6 +29,7 @@ const AuthContext = createContext<AuthContextType>({
   isLoading: true,
   signIn: async () => { throw new Error('AuthContext not initialized'); },
   signUp: async () => { throw new Error('AuthContext not initialized'); },
+  signInAnonymously: async () => { throw new Error('AuthContext not initialized'); },
   signOut: async () => { throw new Error('AuthContext not initialized'); },
 });
 
@@ -102,14 +106,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (isLoading) return;
 
     const inAuthGroup = segments[0] === '(auth)';
-    const inLoginScreen = segments.join('/') === 'login';
     const inRegisterScreen = segments.join('/') === 'register';
     const inForgotPasswordScreen = segments.join('/') === 'forgot-password';
     const inOnboardingScreen = segments.join('/') === 'onboarding';
 
-    if (!user && !inLoginScreen && !inRegisterScreen && !inForgotPasswordScreen && !inOnboardingScreen) {
-      router.replace('/login');
-    } else if (user && (inAuthGroup || inLoginScreen || inRegisterScreen || inForgotPasswordScreen)) {
+    if (!user && !inRegisterScreen && !inForgotPasswordScreen && !inOnboardingScreen) {
+      router.replace('/onboarding');
+    } else if (user && (inAuthGroup || inRegisterScreen || inForgotPasswordScreen || inOnboardingScreen)) {
       router.replace('/');
     }
   }, [user, isLoading, segments]);
@@ -128,6 +131,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       displayName: firebaseUser.displayName,
       photoURL: firebaseUser.photoURL,
     };
+    
+    // Add/update player in Firebase players collection
+    try {
+      const onboardingData = await AsyncStorage.getItem('onboardingData');
+      const parsedOnboarding = onboardingData ? JSON.parse(onboardingData) : {};
+      
+      await addOrUpdatePlayer(firebaseUser.uid, {
+        email: firebaseUser.email,
+        displayName: firebaseUser.displayName,
+        userName: parsedOnboarding.userName,
+        whatsappNumber: parsedOnboarding.whatsappNumber,
+        avatar: parsedOnboarding.avatar || '1',
+        isGuest: parsedOnboarding.isGuest || false,
+      }, true); // true indicates this is a login
+    } catch (error) {
+      console.error('[AuthContext] Error adding player to Firebase on login:', error);
+      // Don't throw error to prevent login failure
+    }
+    
     return userData;
   };
 
@@ -139,11 +161,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       displayName: firebaseUser.displayName,
       photoURL: firebaseUser.photoURL,
     };
+    
+    // Add/update player in Firebase players collection
+    try {
+      const onboardingData = await AsyncStorage.getItem('onboardingData');
+      const parsedOnboarding = onboardingData ? JSON.parse(onboardingData) : {};
+      
+      await addOrUpdatePlayer(firebaseUser.uid, {
+        email: firebaseUser.email,
+        displayName: firebaseUser.displayName,
+        userName: parsedOnboarding.userName,
+        whatsappNumber: parsedOnboarding.whatsappNumber,
+        avatar: parsedOnboarding.avatar || '1',
+        isGuest: parsedOnboarding.isGuest || false,
+      }, false); // false indicates this is a signup
+    } catch (error) {
+      console.error('[AuthContext] Error adding player to Firebase on signup:', error);
+      // Don't throw error to prevent signup failure
+    }
+    
+    return userData;
+  };
+
+  const signInAnonymously = async (): Promise<AuthUser> => {
+    const { user: firebaseUser } = await signInAnonymously(auth);
+    const userData: AuthUser = {
+      uid: firebaseUser.uid,
+      email: firebaseUser.email,
+      displayName: firebaseUser.displayName,
+      photoURL: firebaseUser.photoURL,
+    };
+    
+    // Add/update player in Firebase players collection
+    try {
+      const onboardingData = await AsyncStorage.getItem('onboardingData');
+      const parsedOnboarding = onboardingData ? JSON.parse(onboardingData) : {};
+      
+      await addOrUpdatePlayer(firebaseUser.uid, {
+        email: firebaseUser.email,
+        displayName: firebaseUser.displayName,
+        userName: parsedOnboarding.userName,
+        whatsappNumber: parsedOnboarding.whatsappNumber,
+        avatar: parsedOnboarding.avatar || '1',
+        isGuest: true, // Anonymous users are always guests
+      }, false); // false indicates this is a signup
+    } catch (error) {
+      console.error('[AuthContext] Error adding player to Firebase on anonymous signup:', error);
+      // Don't throw error to prevent signup failure
+    }
+    
     return userData;
   };
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, isLoading, signIn, signUp, signInAnonymously, signOut }}>
       {children}
     </AuthContext.Provider>
   );

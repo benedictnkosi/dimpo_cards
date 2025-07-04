@@ -3,6 +3,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { analytics } from '@/services/analytics';
 import { completeDeviceRegistration, checkDeviceRegistration, getDeviceId, DeviceRegistrationInfo } from '@/services/deviceRegistration';
+import { addOrUpdatePlayer } from '@/services/playersService';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -10,12 +11,10 @@ import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useEffect, useState } from 'react';
-import { Image, ScrollView, StyleSheet, TouchableOpacity, View, TextInput } from 'react-native';
+import { Image, ScrollView, StyleSheet, TouchableOpacity, View, TextInput, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import { ThemedText } from '../components/ThemedText';
-import { DailyLimitSelector } from './components/DailyLimitSelector';
-import { setDailyEarningLimit } from '@/services/dailyEarningLimit';
 
 const SUPERHERO_NAMES = [
   // Reading Heroes
@@ -105,10 +104,10 @@ function getRandomSuperheroName(): string {
 WebBrowser.maybeCompleteAuthSession();
 
 const EMOJIS = {
-  welcome: '📚',
-  topics: '🌟',
-  practice: '🎯',
-  examples: '🎨',
+  welcome: '🤡',
+  casino: '♠️',
+  crazy8: '🃏',
+  top10: '🃏',
 };
 
 type AvatarImages = {
@@ -143,6 +142,8 @@ const RETRY_DELAY = 1000; // 1 second
 interface GuestAccountParams {
   selectedAvatar: string;
   signUp: (email: string, password: string) => Promise<any>;
+  userName?: string;
+  whatsappNumber?: string;
 }
 
 interface FirebaseError extends Error {
@@ -152,7 +153,7 @@ interface FirebaseError extends Error {
   stack?: string;
 }
 
-async function createGuestAccount({ selectedAvatar, signUp }: GuestAccountParams, retryCount = 0): Promise<any> {
+async function createGuestAccount({ selectedAvatar, signUp, userName, whatsappNumber }: GuestAccountParams, retryCount = 0): Promise<any> {
   try {
     //console.log(`[Guest Account] Attempt ${retryCount + 1}/${MAX_RETRIES} - Starting guest account creation`);
 
@@ -174,7 +175,7 @@ async function createGuestAccount({ selectedAvatar, signUp }: GuestAccountParams
 
     // Create learner profile for guest
     const learnerData = {
-      name: getRandomSuperheroName(),
+      name: userName || getRandomSuperheroName(),
       email: guestEmail,
       avatar: selectedAvatar,
     };
@@ -223,12 +224,30 @@ async function createGuestAccount({ selectedAvatar, signUp }: GuestAccountParams
       curriculum: 'CAPS',
       avatar: selectedAvatar,
       onboardingCompleted: true,
-      isGuest: true
+      isGuest: true,
+      userName: userName,
+      whatsappNumber: whatsappNumber
     }));
 
     // Store auth token
     //console.log('[Guest Account] Storing auth token...');
     await SecureStore.setItemAsync('auth', JSON.stringify({ user }));
+
+    // Add player to Firebase players collection
+    try {
+      await addOrUpdatePlayer(user.uid, {
+        email: user.email,
+        displayName: user.displayName,
+        userName: userName,
+        whatsappNumber: whatsappNumber,
+        avatar: selectedAvatar,
+        isGuest: true,
+      }, false); // false indicates this is a signup
+      console.log('[Guest Account] Player added to Firebase successfully');
+    } catch (playerError) {
+      console.error('[Guest Account] Error adding player to Firebase:', playerError);
+      // Don't block the guest account creation if Firebase player creation fails
+    }
 
     // Register device with the server
     try {
@@ -258,12 +277,12 @@ async function createGuestAccount({ selectedAvatar, signUp }: GuestAccountParams
       timestamp: new Date().toISOString()
     });
 
-    if (retryCount < MAX_RETRIES) {
-      //console.log(`[Guest Account] Retrying in ${RETRY_DELAY}ms... (Attempt ${retryCount + 1}/${MAX_RETRIES})`);
-      // Wait before retrying
-      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-      return createGuestAccount({ selectedAvatar, signUp }, retryCount + 1);
-    }
+          if (retryCount < MAX_RETRIES) {
+        //console.log(`[Guest Account] Retrying in ${RETRY_DELAY}ms... (Attempt ${retryCount + 1}/${MAX_RETRIES})`);
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        return createGuestAccount({ selectedAvatar, signUp, userName, whatsappNumber }, retryCount + 1);
+      }
     throw error;
   }
 }
@@ -313,6 +332,8 @@ export default function OnboardingScreen() {
   const [age, setAge] = useState('');
   const [agreedAmount, setAgreedAmount] = useState('');
   const [dailyLimit, setDailyLimit] = useState(0);
+  const [userName, setUserName] = useState('');
+  const [whatsappNumber, setWhatsappNumber] = useState('');
 
   useEffect(() => {
     async function checkAuthAndOnboarding() {
@@ -337,7 +358,7 @@ export default function OnboardingScreen() {
   // Track onboarding screen view
   useEffect(() => {
     const stepName = getStepName(step);
-    analytics.track(`reading_onboarding_${stepName}_viewed`, {
+    analytics.track(`casino_onboarding_${stepName}_viewed`, {
       step_number: step,
       step_name: stepName,
       total_steps: 4
@@ -346,13 +367,7 @@ export default function OnboardingScreen() {
 
   const handleNextStep = () => {
     setErrors({ curriculum: '' });
-
-    // Only complete onboarding after avatar selection (step 5)
-    if (step === 5) {
-      handleComplete();
-    } else {
-      setStep(step + 1);
-    }
+    setStep(step + 1);
   };
 
   const getStepName = (step: number): string => {
@@ -360,15 +375,13 @@ export default function OnboardingScreen() {
       case 0:
         return 'welcome';
       case 1:
-        return 'earn';
+        return 'casino';
       case 2:
-        return 'quiz';
+        return 'crazy8';
       case 3:
-        return 'deal';
+        return 'top10';
       case 4:
-        return 'daily_limit';
-      case 5:
-        return 'avatar';
+        return 'user_info';
       default:
         return 'unknown';
     }
@@ -376,46 +389,37 @@ export default function OnboardingScreen() {
 
   const handleComplete = async () => {
     try {
-      // Track onboarding completion through registration
-      analytics.track('reading_onboarding_completed', {
-        method: 'registration',
+      // Track onboarding completion
+      analytics.track('casino_onboarding_completed', {
+        method: 'anonymous',
         avatar_id: selectedAvatar,
-        total_steps: 4,
-        agreed_amount: agreedAmount,
-        age: age
+        total_steps: 4
       });
 
-      // Store onboarding data
-      await AsyncStorage.setItem('onboardingData', JSON.stringify({
-        curriculum: 'CAPS',
-        avatar: selectedAvatar,
-        onboardingCompleted: true,
-        age: age,
-        agreedAmount: agreedAmount
-      }));
-
-      // Persist the selected daily limit
-      if (dailyLimit) {
-        await setDailyEarningLimit(dailyLimit);
-      }
-
-      // Navigate to registration screen
-      router.push({
-        pathname: '/register',
-        params: {
+      // Create anonymous account
+      const user = await createGuestAccount({ selectedAvatar, signUp, userName, whatsappNumber });
+      
+      if (user) {
+        // Store onboarding data
+        await AsyncStorage.setItem('onboardingData', JSON.stringify({
           curriculum: 'CAPS',
           avatar: selectedAvatar,
-          age: age,
-          agreedAmount: agreedAmount
-        }
-      });
+          onboardingCompleted: true,
+          isGuest: true,
+          userName: userName,
+          whatsappNumber: whatsappNumber
+        }));
+
+        // Navigate to main app
+        router.replace('/');
+      }
 
     } catch (error) {
       console.error('Failed to complete onboarding:', error);
       Toast.show({
         type: 'error',
         text1: 'Error',
-        text2: 'Failed to complete registration',
+        text2: 'Failed to start playing',
         position: 'bottom'
       });
     }
@@ -427,277 +431,115 @@ export default function OnboardingScreen() {
         return (
           <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="welcome-step">
             <View style={{ width: '100%', height: 340, marginBottom: 40, justifyContent: 'center', alignItems: 'center', paddingTop: 40 }}>
-              <Image
-                source={require('../assets/images/dimpo/reading.png')}
-                style={{ width: 220, height: 220, resizeMode: 'contain', marginTop: 60 }}
-                testID="welcome-image"
-              />
+              <Text style={{ fontSize: 120, marginBottom: 20 }}>🤡</Text>
             </View>
             <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="welcome-text-container">
               <ThemedText style={[styles.welcomeTitle, { fontSize: 24, marginBottom: 24, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="welcome-title">
-                Welcome to Dimpo Reads
+                Welcome to Dimpo Plays Cards
               </ThemedText>
               <ThemedText style={[styles.welcomeText, { fontSize: 20, lineHeight: 32, marginBottom: 24, color: isDark ? '#E2E8F0' : '#475569' }]} testID="welcome-description">
-                Read amazing stories and earn an allowance! Start your reading adventure today.
+                Play classic South African card games
               </ThemedText>
             </View>
           </View>
         );
       case 1:
         return (
-          <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="earn-step">
+          <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="casino-step">
             <View style={{ width: '100%', height: 340, marginBottom: 40, justifyContent: 'center', alignItems: 'center', paddingTop: 40 }}>
-              <Image
-                source={require('../assets/images/dimpo/earning.png')}
-                style={{ width: 220, height: 220, resizeMode: 'contain', marginTop: 60 }}
-                testID="earn-image"
-              />
+              <Text style={{ fontSize: 120, marginBottom: 20 }}>♠️</Text>
             </View>
-            <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="earn-text-container">
-              <ThemedText style={[styles.welcomeTitle, { fontSize: 26, marginBottom: 20, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="earn-title">
-                Read and Earn!
+            <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="casino-text-container">
+              <ThemedText style={[styles.welcomeTitle, { fontSize: 26, marginBottom: 20, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="casino-title">
+                Classic Casino
               </ThemedText>
-              <ThemedText style={[styles.welcomeText, { fontSize: 18, lineHeight: 28, marginBottom: 20, color: isDark ? '#E2E8F0' : '#475569' }]} testID="earn-description">
-                Every time you finish a story, you can earn real money. The more you read, the more you earn!
+              <ThemedText style={[styles.welcomeText, { fontSize: 18, lineHeight: 28, marginBottom: 20, color: isDark ? '#E2E8F0' : '#475569' }]} testID="casino-description">
+                Experience the thrill of traditional casino card games with beautiful graphics and smooth gameplay. Test your strategy and luck!
               </ThemedText>
             </View>
           </View>
         );
       case 2:
         return (
-          <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="quiz-step">
+          <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="crazy8-step">
             <View style={{ width: '100%', height: 340, marginBottom: 40, justifyContent: 'center', alignItems: 'center', paddingTop: 40 }}>
-              <Image
-                source={require('../assets/images/dimpo/quiz.png')}
-                style={{ width: 220, height: 220, resizeMode: 'contain', marginTop: 60 }}
-                testID="quiz-image"
-              />
+              <Text style={{ fontSize: 120, marginBottom: 20 }}>🃏</Text>
             </View>
-            <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="quiz-text-container">
-              <ThemedText style={[styles.welcomeTitle, { fontSize: 26, marginBottom: 20, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="quiz-title">
-                Take a Quick Quiz
+            <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="crazy8-text-container">
+              <ThemedText style={[styles.welcomeTitle, { fontSize: 26, marginBottom: 20, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="crazy8-title">
+                Crazy 8
               </ThemedText>
-              <ThemedText style={[styles.welcomeText, { fontSize: 18, lineHeight: 28, marginBottom: 20, color: isDark ? '#E2E8F0' : '#475569' }]} testID="quiz-description">
-                After each chapter, answer a few fun questions to show you've read and understood the story.
+              <ThemedText style={[styles.welcomeText, { fontSize: 18, lineHeight: 28, marginBottom: 20, color: isDark ? '#E2E8F0' : '#475569' }]} testID="crazy8-description">
+                A fast-paced card game where you need to match colors and numbers. Be the first to get rid of all your cards to win!
               </ThemedText>
             </View>
           </View>
         );
-      case 3:
-        // Contract/Deal screen
-        const amountOptions = ['0.5','1','2','3','4','5','10','20','50','100','200','500'];
-        const amountRows = chunkArray(amountOptions, 4);
-        return (
-          <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="deal-step">
-            <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="deal-text-container">
-              <ThemedText style={[styles.welcomeTitle, { fontSize: 26, marginBottom: 20, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="deal-title">
-                Make a Deal with Your Parent! 🤝
+              case 3:
+          // Top 10 South African classic game screen with avatar selection
+                  return (
+          <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="top10-step">
+            <View style={{ width: '100%', height: 340, marginBottom: 40, justifyContent: 'center', alignItems: 'center', paddingTop: 40 }}>
+              <Text style={{ fontSize: 120, marginBottom: 20 }}>♣️</Text>
+            </View>
+            <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="top10-text-container">
+              <ThemedText style={[styles.welcomeTitle, { fontSize: 26, marginBottom: 20, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="top10-title">
+                Top 10
               </ThemedText>
-              <ThemedText style={[styles.welcomeText, { fontSize: 18, lineHeight: 28, marginBottom: 20, color: isDark ? '#E2E8F0' : '#475569' }]} testID="deal-description">
-                Talk to your parent or guardian and agree on an amount you can earn <ThemedText style={{ fontWeight: 'bold' }}>per child</ThemedText> for every chapter you read.
-                Each chapter takes just 8–10 minutes — like a snack break for your brain!
+              <ThemedText style={[styles.welcomeText, { fontSize: 18, lineHeight: 28, marginBottom: 20, color: isDark ? '#E2E8F0' : '#475569' }]} testID="top10-description">
+                Enjoy the classic Top 10 card game, a South African favorite!
               </ThemedText>
-              <ThemedText style={[styles.welcomeText, { fontSize: 16, marginBottom: 12, color: isDark ? '#FBBF24' : '#D97706' }]}>Select your amount <ThemedText style={{ fontWeight: 'bold' }}>per child</ThemedText> per chapter:</ThemedText>
-              <View style={{ gap: 12, marginTop: 8 }}>
-                {amountRows.map((row: any[], rowIdx: number) => (
-                  <View key={rowIdx} style={{ flexDirection: 'row', justifyContent: 'center', marginBottom: 8 }}>
-                    {row.map((option: string, colIdx: number) => {
-                      const idx = rowIdx * 4 + colIdx;
-                      const bgColor = agreedAmount === option
-                        ? (isDark ? '#4F46E5' : '#1E293B')
-                        : AMOUNT_COLORS[idx % AMOUNT_COLORS.length];
-                      return (
-                        <TouchableOpacity
-                          key={option}
-                          style={{
-                            width: 72,
-                            height: 56,
-                            borderRadius: 16,
-                            backgroundColor: bgColor,
-                            justifyContent: 'center',
-                            alignItems: 'center',
-                            marginHorizontal: 6,
-                            borderWidth: agreedAmount === option ? 2 : 1,
-                            borderColor: agreedAmount === option
-                              ? (isDark ? '#fff' : '#1E293B')
-                              : (isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.1)'),
-                            shadowColor: agreedAmount === option ? bgColor : undefined,
-                            shadowOpacity: agreedAmount === option ? 0.4 : 0,
-                            shadowRadius: agreedAmount === option ? 8 : 0,
-                            elevation: agreedAmount === option ? 5 : 0,
-                          }}
-                          onPress={() => {
-                            analytics.track('reading_onboarding_amount_selected', {
-                              amount: option,
-                              step_name: 'deal',
-                              step_number: 3
-                            });
-                            setAgreedAmount(option);
-                          }}
-                          testID={`amount-btn-${option}`}
-                        >
-                          <ThemedText style={{
-                            color: agreedAmount === option
-                              ? (isDark ? '#fff' : '#FFFFFF')
-                              : (isDark ? '#fff' : '#1E293B'),
-                            fontSize: 20,
-                            fontWeight: '700'
-                          }}>{option}</ThemedText>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                ))}
-              </View>
             </View>
           </View>
-        );
+          );
       case 4:
-        // Daily Limit selection step (new, styled like deal screen)
-        const limitOptions = ['1', '5', '10', '25', '50', '75', '100', '200',  '500', '1000','5000','10000'];
-        const limitRows = chunkArray(limitOptions, 4);
-        const agreedAmountNum = parseFloat(agreedAmount) || 0;
         return (
-          <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="daily-limit-step">
-            <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="daily-limit-text-container">
-              <ThemedText style={[styles.welcomeTitle, { fontSize: 26, marginBottom: 20, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="daily-limit-title">
-                Set a Daily Earning Limit with Your Parent! 💰
-              </ThemedText>
-              <ThemedText style={[styles.welcomeText, { fontSize: 18, lineHeight: 28, marginBottom: 20, color: isDark ? '#E2E8F0' : '#475569' }]} testID="daily-limit-description">
-                Ask your parent or guardian: What is the maximum you can earn per child each day?
-              </ThemedText>
-              <ThemedText style={[styles.welcomeText, { fontSize: 16, marginBottom: 12, color: isDark ? '#FBBF24' : '#D97706' }]}>This limit is per child and resets every day at midnight.</ThemedText>
-              <ThemedText style={[styles.welcomeText, { fontSize: 16, marginBottom: 12, color: isDark ? '#FBBF24' : '#D97706' }]}>Select your daily earning limit per child:</ThemedText>
-              <View style={{ gap: 12, marginTop: 8 }}>
-                {limitRows.map((row: string[], rowIdx: number) => (
-                  <View key={rowIdx} style={{ flexDirection: 'row', justifyContent: 'center', marginBottom: 8 }}>
-                    {row.map((option: string, colIdx: number) => {
-                      const idx = rowIdx * 4 + colIdx;
-                      const optionNum = parseFloat(option);
-                      const isDisabled = optionNum < agreedAmountNum;
-                      const bgColor = dailyLimit.toString() === option
-                        ? (isDark ? '#4F46E5' : '#1E293B')
-                        : AMOUNT_COLORS[idx % AMOUNT_COLORS.length];
-                      return (
-                        <TouchableOpacity
-                          key={option}
-                          style={{
-                            width: 72,
-                            height: 56,
-                            borderRadius: 16,
-                            backgroundColor: bgColor,
-                            justifyContent: 'center',
-                            alignItems: 'center',
-                            marginHorizontal: 6,
-                            borderWidth: dailyLimit.toString() === option ? 2 : 1,
-                            borderColor: dailyLimit.toString() === option
-                              ? (isDark ? '#fff' : '#1E293B')
-                              : (isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.1)'),
-                            opacity: isDisabled ? 0.4 : 1,
-                            shadowColor: dailyLimit.toString() === option ? bgColor : undefined,
-                            shadowOpacity: dailyLimit.toString() === option ? 0.4 : 0,
-                            shadowRadius: dailyLimit.toString() === option ? 8 : 0,
-                            elevation: dailyLimit.toString() === option ? 5 : 0,
-                          }}
-                          onPress={() => {
-                            if (isDisabled) return;
-                            analytics.track('reading_onboarding_daily_limit_selected', {
-                              limit: option,
-                              step_name: 'daily_limit',
-                              step_number: 4
-                            });
-                            setDailyLimit(Number(option));
-                          }}
-                          testID={`daily-limit-btn-${option}`}
-                          disabled={isDisabled}
-                        >
-                          <ThemedText style={{
-                            color: dailyLimit.toString() === option
-                              ? (isDark ? '#fff' : '#FFFFFF')
-                              : (isDark ? '#fff' : '#1E293B'),
-                            fontSize: 20,
-                            fontWeight: '700'
-                          }}>{option}</ThemedText>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                ))}
-              </View>
+          <View style={[styles.step, { justifyContent: 'flex-start', paddingTop: 40 }]} testID="user-info-step">
+            <View style={{ width: '100%', height: 200, marginBottom: 40, justifyContent: 'center', alignItems: 'center', paddingTop: 40 }}>
+              <Text style={{ fontSize: 80, marginBottom: 20 }}>📞</Text>
             </View>
-          </View>
-        );
-      case 5:
-        // Avatar selection step
-        return (
-          <View style={styles.step} testID="avatar-step">
-            <View style={styles.textContainer}>
-              <ThemedText style={[styles.stepTitle, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>
-                Choose Your Reading Buddy
+            <View style={[styles.textContainer, { paddingHorizontal: 20 }]} testID="user-info-text-container">
+              <ThemedText style={[styles.welcomeTitle, { fontSize: 26, marginBottom: 20, color: isDark ? '#FFFFFF' : '#1E293B' }]} testID="user-info-title">
+                Connect with Friends
               </ThemedText>
-              <ThemedText style={[styles.stepSubtitle, { color: isDark ? '#E2E8F0' : '#475569' }]}>
-                Pick a reading buddy to join you on your journey to earn and learn!
+              <ThemedText style={[styles.welcomeText, { fontSize: 18, lineHeight: 28, marginBottom: 30, color: isDark ? '#E2E8F0' : '#475569' }]} testID="user-info-description">
+                Share your details to play with friends and join voice calls during games!
               </ThemedText>
-            </View>
-
-            <ScrollView
-              style={styles.avatarsScrollView}
-              contentContainerStyle={styles.avatarsScrollContent}
-            >
-              <View style={styles.avatarsGrid}>
-                {Object.keys(AVATAR_IMAGES).map((avatarId) => (
-                  <TouchableOpacity
-                    key={avatarId}
-                    style={[
-                      styles.avatarButton,
-                      { 
-                        backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)',
-                        borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)'
-                      },
-                      selectedAvatar === avatarId && {
-                        borderColor: isDark ? '#4F46E5' : '#1E293B',
-                        borderWidth: 3,
-                        backgroundColor: isDark ? 'rgba(79, 70, 229, 0.1)' : 'rgba(30, 41, 59, 0.1)',
-                        shadowColor: isDark ? '#4F46E5' : '#1E293B',
-                        shadowOffset: { width: 0, height: 0 },
-                        shadowOpacity: 0.5,
-                        shadowRadius: 8,
-                        elevation: 5,
-                      }
-                    ]}
-                    onPress={() => {
-                      analytics.track('reading_onboarding_avatar_selected', {
-                        avatar_id: avatarId,
-                        step_name: 'avatar',
-                        step_number: 5
-                      });
-                      setSelectedAvatar(avatarId);
-                    }}
-                    testID={`avatar-${avatarId}`}
-                  >
-                    <Image
-                      source={AVATAR_IMAGES[avatarId]}
-                      style={styles.avatarImage}
-                    />
-                    {selectedAvatar === avatarId && (
-                      <View style={[styles.avatarCheckmark, { backgroundColor: isDark ? '#4F46E5' : '#1E293B' }]}>
-                        <Ionicons name="checkmark" size={16} color="#FFFFFF" />
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                ))}
+              
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={[styles.textInput, { 
+                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : '#FFFFFF',
+                    color: isDark ? '#FFFFFF' : '#1E293B',
+                    borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : '#E2E8F0'
+                  }]}
+                  placeholder="Your name"
+                  placeholderTextColor={isDark ? 'rgba(255, 255, 255, 0.6)' : '#94A3B8'}
+                  value={userName}
+                  onChangeText={setUserName}
+                  testID="user-name-input"
+                />
+                
+                <TextInput
+                  style={[styles.textInput, { 
+                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : '#FFFFFF',
+                    color: isDark ? '#FFFFFF' : '#1E293B',
+                    borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : '#E2E8F0'
+                  }]}
+                  placeholder="WhatsApp number (e.g., +27 123 456 789)"
+                  placeholderTextColor={isDark ? 'rgba(255, 255, 255, 0.6)' : '#94A3B8'}
+                  value={whatsappNumber}
+                  onChangeText={setWhatsappNumber}
+                  keyboardType="phone-pad"
+                  testID="whatsapp-number-input"
+                />
               </View>
-            </ScrollView>
-            <View style={styles.authOptionsContainer}>
-              <TouchableOpacity
-                style={[styles.authButton, { backgroundColor: isDark ? '#4F46E5' : '#1E293B' }]}
-                onPress={handleNextStep}
-                testID="create-account-button"
-              >
-                <ThemedText style={[styles.authButtonText, { color: '#FFFFFF' }]}>
-                  Start Reading Adventure
+              
+              <View style={styles.infoCard}>
+                <ThemedText style={[styles.infoText, { color: isDark ? '#E2E8F0' : '#475569' }]}>
+                  💡 This information helps you connect with friends for voice calls during multiplayer games
                 </ThemedText>
-              </TouchableOpacity>
+              </View>
             </View>
           </View>
         );
@@ -716,47 +558,32 @@ export default function OnboardingScreen() {
           {renderStep()}
         </View>
 
-        {(step < 4) && (
+        {(step < 5) && (
           <View style={styles.buttonContainer} testID="navigation-buttons">
             {step === 0 ? (
+              <TouchableOpacity
+                style={[styles.button, { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' }]}
+                onPress={() => {
+                  // Track onboarding start
+                  analytics.track('casino_onboarding_started', {
+                    step_number: 0,
+                    step_name: 'welcome',
+                    action: 'start_onboarding'
+                  });
+                  setStep(1);
+                }}
+                testID="start-onboarding-button"
+              >
+                <ThemedText style={[styles.buttonText, { color: isDark ? '#4d5ad3' : '#FFFFFF' }]}> 
+                  Let's Play! 🤡
+                </ThemedText>
+              </TouchableOpacity>
+            ) : step === 4 ? (
               <>
                 <TouchableOpacity
                   style={[styles.button, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)' }]}
                   onPress={() => {
-                    analytics.track('reading_onboarding_back_to_login', {
-                      step_name: 'welcome',
-                      step_number: 0
-                    });
-                    router.replace('/login');
-                  }}
-                  testID="login-button"
-                >
-                  <ThemedText style={[styles.buttonText, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>Login</ThemedText>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.button, { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' }]}
-                  onPress={() => {
-                    // Track onboarding start
-                    analytics.track('reading_onboarding_started', {
-                      step_number: 0,
-                      step_name: 'welcome',
-                      action: 'start_onboarding'
-                    });
-                    setStep(1);
-                  }}
-                  testID="start-onboarding-button"
-                >
-                  <ThemedText style={[styles.buttonText, { color: isDark ? '#4d5ad3' : '#FFFFFF' }]}> 
-                    Let's Read! 📚
-                  </ThemedText>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                <TouchableOpacity
-                  style={[styles.button, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)' }]}
-                  onPress={() => {
-                    analytics.track('reading_onboarding_navigation', {
+                    analytics.track('casino_onboarding_navigation', {
                       action: 'previous_step',
                       from_step: step,
                       to_step: step - 1,
@@ -769,14 +596,36 @@ export default function OnboardingScreen() {
                   <ThemedText style={[styles.buttonText, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>Back</ThemedText>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[
-                    styles.button,
-                    { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' },
-                    (step === 3 && !agreedAmount) && { opacity: 0.5 }
-                  ]}
+                  style={[styles.button, { backgroundColor: isDark ? '#4F46E5' : '#1E293B' }]}
+                  onPress={handleComplete}
+                  testID="start-playing-button"
+                >
+                  <ThemedText style={[styles.buttonText, { color: '#FFFFFF' }]}>
+                    Start Playing! ♦️
+                  </ThemedText>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={[styles.button, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)' }]}
                   onPress={() => {
-                    if (step === 3 && !agreedAmount) return;
-                    analytics.track('reading_onboarding_navigation', {
+                    analytics.track('casino_onboarding_navigation', {
+                      action: 'previous_step',
+                      from_step: step,
+                      to_step: step - 1,
+                      step_name: getStepName(step)
+                    });
+                    setStep(step - 1);
+                  }}
+                  testID="previous-step-button"
+                >
+                  <ThemedText style={[styles.buttonText, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>Back</ThemedText>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.button, { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' }]}
+                  onPress={() => {
+                    analytics.track('casino_onboarding_navigation', {
                       action: 'next_step',
                       from_step: step,
                       to_step: step + 1,
@@ -785,7 +634,6 @@ export default function OnboardingScreen() {
                     handleNextStep();
                   }}
                   testID="next-step-button"
-                  disabled={step === 3 && !agreedAmount}
                 >
                   <ThemedText style={[
                     styles.buttonText,
@@ -796,52 +644,6 @@ export default function OnboardingScreen() {
                 </TouchableOpacity>
               </>
             )}
-          </View>
-        )}
-
-        {(step === 4) && (
-          <View style={styles.buttonContainer} testID="navigation-buttons">
-            <TouchableOpacity
-              style={[styles.button, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)' }]}
-              onPress={() => {
-                analytics.track('reading_onboarding_navigation', {
-                  action: 'previous_step',
-                  from_step: step,
-                  to_step: step - 1,
-                  step_name: getStepName(step)
-                });
-                setStep(step - 1);
-              }}
-              testID="previous-step-button"
-            >
-              <ThemedText style={[styles.buttonText, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>Back</ThemedText>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.button,
-                { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' },
-                !dailyLimit && { opacity: 0.5 }
-              ]}
-              onPress={() => {
-                if (!dailyLimit) return;
-                analytics.track('reading_onboarding_navigation', {
-                  action: 'next_step',
-                  from_step: step,
-                  to_step: step + 1,
-                  step_name: getStepName(step),
-                });
-                handleNextStep();
-              }}
-              testID="next-step-button"
-              disabled={!dailyLimit}
-            >
-              <ThemedText style={[
-                styles.buttonText,
-                { color: isDark ? '#1E293B' : '#FFFFFF' }
-              ]}>
-                Continue! ⭐
-              </ThemedText>
-            </TouchableOpacity>
           </View>
         )}
       </View>
@@ -1732,5 +1534,66 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     marginVertical: 8,
+  },
+  leaderboardPreview: {
+    width: '100%',
+    borderRadius: 16,
+    padding: 20,
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  leaderboardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  leaderboardItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  rankText: {
+    fontSize: 20,
+    width: 40,
+  },
+  playerName: {
+    fontSize: 16,
+    fontWeight: '600',
+    flex: 1,
+    marginLeft: 12,
+  },
+  playerScore: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  inputContainer: {
+    width: '100%',
+    gap: 16,
+    marginBottom: 24,
+  },
+  textInput: {
+    width: '100%',
+    height: 56,
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    fontSize: 16,
+    borderWidth: 1,
+  },
+  infoCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  infoText: {
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
   },
 });

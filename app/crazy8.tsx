@@ -19,6 +19,7 @@ import { db } from '@/config/firebase';
 import { collection, addDoc, onSnapshot, query, where, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { useUsername } from '@/hooks/useUsername';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS } from 'react-native-reanimated';
+import { router } from 'expo-router';
 
 const { width, height } = Dimensions.get('window');
 
@@ -64,7 +65,6 @@ function shuffle(deck: Card[]): Card[] {
   }
   return arr;
 }
-
 
 export default function CasinoGameScreen() {
   const { username } = useUsername();
@@ -268,16 +268,27 @@ export default function CasinoGameScreen() {
   // Start new game
   async function handleStartNewGame() {
     try {
-      // Delete all existing games
+      // Delete only active games (not completed) where the current user is a player
       const gamesQuery = query(collection(db, 'games'));
       const gamesSnapshot = await getDocs(gamesQuery);
       
-      const deletePromises = gamesSnapshot.docs.map(doc => deleteDoc(doc.ref));
+      const deletePromises = gamesSnapshot.docs
+        .filter(doc => {
+          const gameData = doc.data();
+          const player1Name = gameData.players?.player1?.name;
+          const player2Name = gameData.players?.player2?.name;
+          const isPlayerInGame = player1Name === username || player2Name === username;
+          const isActiveGame = gameData.status !== 'finished';
+          return isPlayerInGame && isActiveGame;
+        })
+        .map(doc => deleteDoc(doc.ref));
+      
       await Promise.all(deletePromises);
       
       const docRef = await addDoc(collection(db, 'games'), {
         status: 'waiting',
         createdAt: serverTimestamp(),
+        gameName: username || 'Player',
         players: {
           player1: {
             name: username || 'Player',
@@ -300,14 +311,14 @@ export default function CasinoGameScreen() {
       const gameData = gameSnap.exists() ? gameSnap.data() : null;
       if (gameData && (!gameData.players.player2 || !gameData.players.player2.name)) {
         await updateDoc(gameDocRef, {
-          status: 'started',
+          status: 'pending_acceptance',
           [`players.player2`]: {
             name: username || 'Player',
             hand: [],
           },
         });
       } else {
-        await updateDoc(gameDocRef, { status: 'started' });
+        await updateDoc(gameDocRef, { status: 'pending_acceptance' });
       }
       setCurrentGameId(gameId);
       setScreen('game');
@@ -531,6 +542,18 @@ export default function CasinoGameScreen() {
     animateCenterCardDown();
   }
 
+  // Accept opponent (for player 1)
+  async function handleAcceptOpponent() {
+    if (!currentGameId) return;
+    try {
+      const gameDocRef = doc(db, 'games', currentGameId);
+      await updateDoc(gameDocRef, {
+        status: 'started',
+      });
+    } catch (err) {
+    }
+  }
+
   // Handle undoing a play by moving top card from discard pile to player's hand
   async function handleUndoPlay(player: Player) {
     // Only allow undo if it's the local player's turn and there are cards in discard pile
@@ -641,36 +664,190 @@ export default function CasinoGameScreen() {
     }
   }, [game.discard]);
 
-  // --- RENDER ---
-  if (screen === 'welcome') {
+  // Move these hooks to the top level, before any conditional or return
+  const fadeAnim = useRef(new LegacyAnimated.Value(0)).current;
+  const emojiScale = useRef(new LegacyAnimated.Value(0.8)).current;
+  const [btnScale] = useState(new LegacyAnimated.Value(1));
+  useEffect(() => {
+    LegacyAnimated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 700,
+      useNativeDriver: true,
+    }).start();
+    LegacyAnimated.spring(emojiScale, {
+      toValue: 1,
+      friction: 3,
+      tension: 80,
+      useNativeDriver: true,
+    }).start();
+  }, []);
+  const onBtnPressIn = () => {
+    LegacyAnimated.spring(btnScale, {
+      toValue: 0.96,
+      useNativeDriver: true,
+    }).start();
+  };
+  const onBtnPressOut = () => {
+    LegacyAnimated.spring(btnScale, {
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  // Only show the playful welcome screen if:
+  // - screen === 'welcome' OR
+  // - firebaseGameData?.status === 'waiting' OR firebaseGameData?.status === 'pending_acceptance'
+  // If firebaseGameData?.status === 'started', show the game table view.
+  const showWelcome = (screen === 'welcome') || (firebaseGameData && (firebaseGameData.status === 'waiting' || firebaseGameData.status === 'pending_acceptance'));
+  if (showWelcome) {
     return (
-      <ThemedView style={styles.container}>
-        <LinearGradient
-          colors={["#43e97b", "#38f9d7", "#22c55e"]}
-          start={{ x: 0.1, y: 0.1 }}
-          end={{ x: 0.9, y: 0.9 }}
-          style={styles.fullTableBg}
+      <LinearGradient
+        colors={["#14532d", "#006400", "#228B22"]}
+        start={{ x: 0.1, y: 0.1 }}
+        end={{ x: 0.9, y: 0.9 }}
+        style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}
+      >
+        {/* Playful casino title */}
+        <ThemedText style={styles.casinoTitle}>🎲 Dimpo Crazy 8 🎰</ThemedText>
+        {/* Casino/joker mascot emoji */}
+        <LegacyAnimated.Text
+          style={{
+            fontSize: 72,
+            marginBottom: 10,
+            textAlign: 'center',
+            transform: [{ scale: emojiScale }],
+            shadowColor: '#FFD700',
+            shadowOpacity: 0.5,
+            shadowRadius: 16,
+            shadowOffset: { width: 0, height: 4 },
+          }}
+          accessibilityLabel="Joker emoji"
         >
-          <View style={styles.welcomeCenter}>
-            <ThemedText style={styles.welcomeTitle}>Welcome to the Crazy 8 Game</ThemedText>
-            <TouchableOpacity style={styles.dealBtn} onPress={handleStartNewGame}>
-              <ThemedText style={styles.dealBtnText}>Start New Game</ThemedText>
+          🃏
+        </LegacyAnimated.Text>
+        {/* Start New Game button (only show if not waiting for opponent) */}
+        {(!firebaseGameData || (firebaseGameData.status !== 'waiting' && firebaseGameData.status !== 'pending_acceptance')) && (
+          <LegacyAnimated.View style={{ transform: [{ scale: btnScale }], width: '100%', alignItems: 'center', marginBottom: 10 }}>
+            <TouchableOpacity
+              style={styles.dealBtnModern}
+              onPress={handleStartNewGame}
+              activeOpacity={0.85}
+              onPressIn={onBtnPressIn}
+              onPressOut={onBtnPressOut}
+            >
+              <ThemedText style={styles.dealBtnTextModern}>Start New Game</ThemedText>
             </TouchableOpacity>
-            <ThemedText style={styles.waitingTitle}>Games waiting for opponents:</ThemedText>
-            {waitingGames.length === 0 && (
-              <ThemedText style={styles.noGamesText}>No games waiting</ThemedText>
-            )}
-            {waitingGames.map(game => (
-              <TouchableOpacity key={game.id} style={styles.waitingGameBtn} onPress={() => handleJoinGame(game.id)}>
-                <ThemedText style={styles.waitingGameText}>Game {game.id.slice(-5)}</ThemedText>
+          </LegacyAnimated.View>
+        )}
+        {/* Animated waiting message (show if waiting for opponent or pending acceptance) */}
+        {firebaseGameData && (firebaseGameData.status === 'waiting' || firebaseGameData.status === 'pending_acceptance') && (
+          // Host sees accept button if pending_acceptance
+          isPlayer1 && firebaseGameData.status === 'pending_acceptance' && firebaseGameData.players?.player2?.name ? (
+            <View style={styles.acceptContainer}>
+              <ThemedText style={styles.opponentJoinedText}>
+                {firebaseGameData.players.player2.name} wants to join!
+              </ThemedText>
+              <TouchableOpacity style={styles.acceptBtn} onPress={handleAcceptOpponent}>
+                <ThemedText style={styles.acceptBtnText}>Accept Opponent</ThemedText>
               </TouchableOpacity>
-            ))}
+            </View>
+          ) :
+          // Player 2 sees waiting for host to accept
+          (!isPlayer1 && firebaseGameData.status === 'pending_acceptance') ? (
+            <LegacyAnimated.Text
+              style={[
+                styles.waitingMessagePlayful,
+                {
+                  opacity: fadeAnim,
+                  transform: [{ scale: fadeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.95, 1.08] }) }],
+                },
+              ]}
+            >
+              Waiting for host to accept...
+            </LegacyAnimated.Text>
+          ) :
+          // Default: waiting for opponent to join
+          (
+            <LegacyAnimated.Text
+              style={[
+                styles.waitingMessagePlayful,
+                {
+                  opacity: fadeAnim,
+                  transform: [{ scale: fadeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.95, 1.08] }) }],
+                },
+              ]}
+            >
+              Waiting for opponent to join…
+            </LegacyAnimated.Text>
+          )
+        )}
+        {/* Games waiting for opponents section (only show if not currently waiting for an opponent) */}
+        {(!firebaseGameData || (firebaseGameData.status !== 'waiting' && firebaseGameData.status !== 'pending_acceptance')) && (
+          <View style={styles.waitingGamesSection}>
+            <ThemedText style={styles.waitingTitleModern}>Games waiting for opponents:</ThemedText>
+            {waitingGames.length === 0 && (
+              <View style={styles.noGamesModernRow}>
+                
+                <ThemedText style={styles.noGamesPlayfulText}>No games yet! Be the first to start one!</ThemedText>
+              </View>
+            )}
+            <View style={styles.waitingGamesListModern}>
+              {waitingGames.map(game => {
+                const createdAt = game.createdAt?.toDate ? game.createdAt.toDate() : new Date();
+                const formattedDate = createdAt.toLocaleDateString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit'
+                });
+                return (
+                  <TouchableOpacity
+                    key={game.id}
+                    style={styles.waitingGameBtnModern}
+                    onPress={() => handleJoinGame(game.id)}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.gameInfoContainerModern}>
+                      <ThemedText style={styles.waitingGameTextModern}>🎲 <ThemedText style={{fontWeight:'bold'}}>{game.gameName || 'Player'}</ThemedText></ThemedText>
+                      <ThemedText style={styles.gameDateTextModern}>{formattedDate}</ThemedText>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
-        </LinearGradient>
-      </ThemedView>
+        )}
+        {/* Playful casino elements in corners */}
+        <View style={[styles.cornerEmojiTL, styles.cornerEmojiTop]}><ThemedText style={styles.cornerEmoji}>🪙</ThemedText></View>
+        <View style={[styles.cornerEmojiTR, styles.cornerEmojiTop]}><ThemedText style={styles.cornerEmoji}>🎲</ThemedText></View>
+        <View style={styles.cornerEmojiBL}><ThemedText style={styles.cornerEmoji}>🃏</ThemedText></View>
+        <View style={styles.cornerEmojiBR}><ThemedText style={styles.cornerEmoji}>🪙</ThemedText></View>
+        {/* Cancel Game button */}
+        {(firebaseGameData && (firebaseGameData.status === 'waiting' || firebaseGameData.status === 'pending_acceptance')) && (
+          <TouchableOpacity
+            style={styles.cancelGameBtn}
+            onPress={async () => {
+              if (currentGameId) {
+                try {
+                  await deleteDoc(doc(db, 'games', currentGameId));
+                  
+                } catch (err) {
+                  console.error('Error deleting game:', err);
+                }
+              }
+              setCurrentGameId(null);
+              router.push('/');
+            }}
+            activeOpacity={0.7}
+          >
+            <ThemedText style={styles.cancelGameBtnText}>❌ Cancel Game</ThemedText>
+          </TouchableOpacity>
+        )}
+        {/* Footer */}
+        <View style={styles.footer}><ThemedText style={styles.footerText}>© {new Date().getFullYear()} Dimpo Crazy 8</ThemedText></View>
+      </LinearGradient>
     );
   }
-
 
   return (
     <View style={{ flex: 1, position: 'relative' }}>
@@ -689,18 +866,48 @@ export default function CasinoGameScreen() {
       
       <ThemedView style={styles.container}>
         <LinearGradient
-          colors={["#43e97b", "#38f9d7", "#22c55e"]}
+          colors={["#14532d", "#006400", "#228B22"]}
           start={{ x: 0.1, y: 0.1 }}
           end={{ x: 0.9, y: 0.9 }}
           style={styles.fullTableBg}
         >
-          {/* INIT PHASE: Show deck and Deal button */}
+          {/* INIT PHASE: Show deck and Deal button or waiting message */}
           {gamePhase === 'init' && (
-            <View style={styles.initCenter}>
-              {getCardBack()}
-              <TouchableOpacity style={styles.dealBtn} onPress={handleDeal}>
-                <ThemedText style={styles.dealBtnText}>Deal</ThemedText>
-              </TouchableOpacity>
+            <View style={styles.initCenterFixed}>
+              {/* Big deck with glow */}
+              <View style={styles.bigDeckContainer}>
+                <View style={styles.bigDeckGlow} />
+                <Image
+                  source={require('../assets/images/facedown-card.png')}
+                  style={styles.bigDeckImage}
+                  resizeMode="contain"
+                />
+              </View>
+              {/* Deal button or waiting message */}
+              {firebaseGameData?.status === 'pending_acceptance' && firebaseGameData?.players?.player2?.name ? (
+                isPlayer1 ? (
+                  <View style={styles.acceptContainer}>
+                    <ThemedText style={styles.opponentJoinedText}>
+                      {firebaseGameData.players.player2.name} wants to join!
+                    </ThemedText>
+                    <TouchableOpacity style={styles.acceptBtn} onPress={handleAcceptOpponent}>
+                      <ThemedText style={styles.acceptBtnText}>Accept Opponent</ThemedText>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.waitingContainer}>
+                    <ThemedText style={styles.waitingMessage}>Waiting for host to accept...</ThemedText>
+                  </View>
+                )
+              ) : firebaseGameData?.status === 'started' && firebaseGameData?.players?.player2?.name ? (
+                <TouchableOpacity style={styles.dealBtnModernBig} onPress={handleDeal}>
+                  <ThemedText style={styles.dealBtnTextModernBig}>🎲 Deal Cards</ThemedText>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.waitingContainer}>
+                  <ThemedText style={styles.waitingMessage}>Waiting for opponent to join...</ThemedText>
+                </View>
+              )}
             </View>
           )}
           {/* DEALING PHASE: Animate cards being dealt */}
@@ -943,11 +1150,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  initCenter: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  initCenterFixed: {
+    flex: 1,
     justifyContent: 'center',
-    marginTop: height / 2 - 80,
+    alignItems: 'center',
+    flexDirection: 'column',
+    paddingTop: 40,
+    paddingBottom: 40,
   },
   dealBtn: {
     backgroundColor: '#19C37D',
@@ -1115,21 +1324,21 @@ const styles = StyleSheet.create({
     marginTop: height / 2 - 120,
   },
   welcomeTitle: {
-    color: '#fff',
+    color: '#222',
     fontSize: 24,
     fontWeight: 'bold',
     marginBottom: 24,
   },
   waitingTitle: {
-    color: '#fff',
+    color: '#222',
     fontSize: 18,
     fontWeight: 'bold',
     marginBottom: 12,
   },
   noGamesText: {
-    color: '#fff',
+    color: '#444',
     fontSize: 16,
-    opacity: 0.7,
+    opacity: 1,
   },
   waitingGameBtn: {
     backgroundColor: '#19C37D',
@@ -1139,15 +1348,15 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   waitingGameText: {
-    color: '#fff',
+    color: '#222',
     fontWeight: 'bold',
     fontSize: 16,
   },
   drawHintText: {
-    color: '#fff',
+    color: '#444',
     fontSize: 12,
     fontWeight: '500',
-    opacity: 0.8,
+    opacity: 1,
     textAlign: 'center',
   },
   undoHintText: {
@@ -1157,5 +1366,417 @@ const styles = StyleSheet.create({
     opacity: 0.8,
     textAlign: 'center',
     marginTop: 24,
+  },
+  gameInfoContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gameDateText: {
+    color: '#555',
+    fontSize: 12,
+    opacity: 1,
+    marginTop: 2,
+  },
+  waitingContainer: {
+    marginLeft: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  waitingMessage: {
+    color: '#444',
+    fontSize: 18,
+    fontWeight: '500',
+    textAlign: 'center',
+    opacity: 1,
+  },
+  acceptContainer: {
+    marginLeft: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  opponentJoinedText: {
+    color: '#FFD700',
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 18,
+    textShadowColor: '#222',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
+  acceptBtn: {
+    backgroundColor: '#22c55e',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 20,
+    elevation: 3,
+  },
+  acceptBtnText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  welcomeFadeIn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  welcomeCard: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 32,
+    paddingVertical: 36,
+    paddingHorizontal: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.10,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 8 },
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.22)',
+    marginBottom: 32,
+    width: width > 400 ? 380 : '90%',
+    minWidth: 320,
+  },
+  welcomeLogo: {
+    width: 72,
+    height: 72,
+    marginBottom: 18,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  waitingGamesList: {
+    width: '100%',
+    marginTop: 8,
+    borderRadius: 18,
+    backgroundColor: 'rgba(34,197,94,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.18)',
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    minHeight: 32,
+  },
+  footer: {
+    marginTop: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  footerText: {
+    color: '#fff',
+    fontSize: 13,
+    opacity: 0.5,
+    textAlign: 'center',
+  },
+  welcomeBg: {
+    backgroundColor: '#f7f7fa',
+  },
+  // Modernized welcome card styles
+  welcomeCardModern: {
+    backgroundColor: 'rgba(255,255,255,0.55)',
+    borderRadius: 36,
+    paddingVertical: 40,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.12,
+    shadowRadius: 32,
+    shadowOffset: { width: 0, height: 8 },
+    borderWidth: 1.5,
+    borderColor: 'rgba(34,197,94,0.13)',
+    marginBottom: 32,
+    width: width > 400 ? 400 : '92%',
+    minWidth: 320,
+    backdropFilter: 'blur(12px)', // for web, ignored on native
+  },
+  welcomeTitleModern: {
+    color: '#222',
+    fontSize: 28,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    textAlign: 'center',
+    letterSpacing: 0.5,
+  },
+  welcomeSubtitleModern: {
+    color: '#444',
+    fontSize: 16,
+    fontWeight: '500',
+    marginBottom: 24,
+    textAlign: 'center',
+    opacity: 0.85,
+  },
+  dealBtnModern: {
+    backgroundColor: '#19C37D',
+    marginLeft: 0,
+    paddingHorizontal: 36,
+    paddingVertical: 20,
+    borderRadius: 32,
+    elevation: 6,
+    shadowColor: '#19C37D',
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    marginBottom: 18,
+    width: '100%',
+  },
+  dealBtnTextModern: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 22,
+    letterSpacing: 1,
+    textAlign: 'center',
+  },
+  dividerModern: {
+    width: '80%',
+    height: 1.5,
+    backgroundColor: 'rgba(34,197,94,0.13)',
+    marginVertical: 18,
+    borderRadius: 1,
+    alignSelf: 'center',
+  },
+  waitingTitleModern: {
+    color: '#222',
+    fontSize: 17,
+    fontWeight: 'bold',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  noGamesModernRow: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  noGamesBigEmoji: {
+    fontSize: 54,
+    marginBottom: 8,
+    textAlign: 'center',
+    textShadowColor: '#FFD700',
+    textShadowOffset: { width: 0, height: 4 },
+    textShadowRadius: 16,
+  },
+  noGamesPlayfulText: {
+    color: '#FFD700',
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textShadowColor: '#222',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6,
+    marginBottom: 4,
+  },
+  waitingGamesListModern: {
+    width: '100%',
+    marginTop: 8,
+    
+    backgroundColor: 'rgba(34,197,94,0.06)',
+   
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    minHeight: 32,
+    alignItems: 'center',
+  },
+  waitingGameBtnModern: {
+    backgroundColor: '#fffbe6', // subtle gold/cream
+    paddingHorizontal: 22,
+    paddingVertical: 16,
+    borderRadius: 22,
+    marginTop: 0,
+    marginBottom: 18,
+    shadowColor: '#FFD700',
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    borderWidth: 2,
+    borderColor: '#FFD700',
+    width: 240,
+    alignItems: 'center',
+    elevation: 4,
+  },
+  waitingGameTextModern: {
+    color: '#19C37D',
+    fontWeight: 'bold',
+    fontSize: 20,
+    marginBottom: 2,
+    textShadowColor: '#FFD700',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+    letterSpacing: 0.5,
+  },
+  gameInfoContainerModern: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gameDateTextModern: {
+    color: '#555',
+    fontSize: 12,
+    opacity: 1,
+    marginTop: 2,
+  },
+  casinoTitle: {
+    color: '#FFD700',
+    fontSize: 32,
+    fontWeight: 'bold',
+    marginTop: 32,
+    marginBottom: 8,
+    textShadowColor: '#222',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+    letterSpacing: 1.2,
+    textAlign: 'center',
+  },
+  glowCardBackContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 24,
+    marginBottom: 16,
+  },
+  glowCardBack: {
+    position: 'absolute',
+    width: 66,
+    height: 90,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 215, 0, 0.18)',
+    shadowColor: '#FFD700',
+    shadowOpacity: 0.7,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 0 },
+    zIndex: -1,
+  },
+  waitingMessagePlayful: {
+    color: '#FFD700',
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginTop: 18,
+    marginBottom: 18,
+    textAlign: 'center',
+    textShadowColor: '#222',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+    letterSpacing: 1.1,
+  },
+  cornerEmoji: {
+    fontSize: 32,
+    opacity: 0.85,
+  },
+  cornerEmojiTL: {
+    position: 'absolute',
+    top: 18,
+    left: 18,
+  },
+  cornerEmojiTR: {
+    position: 'absolute',
+    top: 18,
+    right: 18,
+  },
+  cornerEmojiBL: {
+    position: 'absolute',
+    bottom: 32,
+    left: 18,
+  },
+  cornerEmojiBR: {
+    position: 'absolute',
+    bottom: 32,
+    right: 18,
+  },
+  cornerEmojiTop: {
+    marginTop: 18,
+  },
+  waitingGamesSection: {
+    marginTop: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelGameBtn: {
+    backgroundColor: 'rgba(220,38,38,0.9)',
+    borderRadius: 20,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    shadowColor: '#dc2626',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+    alignItems: 'center',
+    alignSelf: 'center',
+    marginBottom: 24,
+  },
+  cancelGameBtnText: {
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: 'bold',
+    textShadowColor: '#222',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  bigDeckContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 24,
+    marginBottom: 24,
+    position: 'relative',
+  },
+  bigDeckGlow: {
+    position: 'absolute',
+    width: 140,
+    height: 200,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 215, 0, 0.18)',
+    shadowColor: '#FFD700',
+    shadowOpacity: 0.7,
+    shadowRadius: 32,
+    shadowOffset: { width: 0, height: 0 },
+    zIndex: -1,
+  },
+  bigDeckImage: {
+    width: 120,
+    height: 180,
+    borderRadius: 18,
+    borderWidth: 3,
+    borderColor: '#FFD700',
+    shadowColor: '#222',
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  dealBtnModernBig: {
+    backgroundColor: 'linear-gradient(90deg, #FFD700 0%, #19C37D 100%)',
+    marginLeft: 24,
+    paddingHorizontal: 48,
+    paddingVertical: 22,
+    borderRadius: 36,
+    elevation: 8,
+    shadowColor: '#FFD700',
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    marginTop: 12,
+    marginBottom: 8,
+    width: 260,
+    alignItems: 'center',
+  },
+  dealBtnTextModernBig: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 28,
+    letterSpacing: 1.2,
+    textAlign: 'center',
+    textShadowColor: '#FFD700',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
   },
 });
