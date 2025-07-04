@@ -542,6 +542,9 @@ export default function CasinoGameScreen() {
     const newDiscard = [...game.discard];
     const cardToUndo = newDiscard.pop()!; // Remove the top card
     
+    // Update previousDiscardCard to the new top card (or null)
+    setPreviousDiscardCard(newDiscard.length > 1 ? newDiscard[newDiscard.length - 2] : null);
+
     const newGameState: GameState = {
       ...game,
       hands: {
@@ -779,10 +782,10 @@ export default function CasinoGameScreen() {
                 <View style={styles.pilesRow}>
                   {/* Spacer to separate stock and discard piles */}
                   <View style={{ width: 32 }} />
-                  {/* Discard pile - show previous and current discard stacked */}
+                  {/* Discard pile - show top 2 cards from firebase discardPile */}
                   <TouchableOpacity
                     onPress={() => handleUndoPlay('south')}
-                    disabled={ game.winner !== null || game.chooseSuit || game.discard.length <= 1}
+                    disabled={ game.winner !== null || game.chooseSuit || (firebaseGameData?.discardPile?.length ?? game.discard.length) <= 1}
                     style={{
                       alignItems: 'center',
                       position: 'relative',
@@ -801,31 +804,48 @@ export default function CasinoGameScreen() {
                       }}
                     >
                       <View style={{ width: 120, height: 170, position: 'relative' }}>
-                        {previousDiscardCard && (
-                          <View style={{
-                            position: 'absolute',
-                            left: -32,
-                            top: 16,
-                            zIndex: 1,
-                            opacity: 0.7,
-                          }}>
-                            <CasinoCard suit={previousDiscardCard.suit} value={previousDiscardCard.value} style={{ width: 120, height: 170 }} />
-                          </View>
-                        )}
-                        {game.discard.length > 0 && (
-                          <View style={{
-                            position: 'absolute',
-                            left: 0,
-                            top: 0,
-                            zIndex: 2,
-                          }}>
-                            <CasinoCard suit={game.discard[game.discard.length - 1].suit} value={game.discard[game.discard.length - 1].value} style={{ width: 120, height: 170 }} />
-                          </View>
-                        )}
+                        {(() => {
+                          const discardPile = firebaseGameData?.discardPile ?? game.discard;
+                          const len = discardPile.length;
+                          // Show second-to-top card (if exists)
+                          if (len > 1) {
+                            const secondTop = discardPile[len - 2];
+                            return (
+                              <View style={{
+                                position: 'absolute',
+                                left: -32,
+                                top: 16,
+                                zIndex: 1,
+                                opacity: 0.7,
+                              }}>
+                                <CasinoCard suit={secondTop.suit} value={secondTop.value} style={{ width: 120, height: 170 }} />
+                              </View>
+                            );
+                          }
+                          return null;
+                        })()}
+                        {(() => {
+                          const discardPile = firebaseGameData?.discardPile ?? game.discard;
+                          const len = discardPile.length;
+                          if (len > 0) {
+                            const top = discardPile[len - 1];
+                            return (
+                              <View style={{
+                                position: 'absolute',
+                                left: 0,
+                                top: 0,
+                                zIndex: 2,
+                              }}>
+                                <CasinoCard suit={top.suit} value={top.value} style={{ width: 120, height: 170 }} />
+                              </View>
+                            );
+                          }
+                          return null;
+                        })()}
                       </View>
                     </View>
                     {/* Show hint text when it's the player's turn and they can undo */}
-                    { game.winner === null && !game.chooseSuit && game.discard.length > 1 && (
+                    { game.winner === null && !game.chooseSuit && ((firebaseGameData?.discardPile?.length ?? game.discard.length) > 1) && (
                       <ThemedText style={styles.undoHintText}>Tap to Undo</ThemedText>
                     )}
                   </TouchableOpacity>
