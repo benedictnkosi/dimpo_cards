@@ -129,6 +129,8 @@ export default function CasinoGameScreen() {
 
   // Track previous discard card when discard pile changes (for opponent plays)
   const lastDiscardRef = useRef<Card | null>(null);
+  const prevOpponentHandLength = useRef<number>(0);
+
   useEffect(() => {
     // Only run if discard pile has at least one card
     if (game.discard.length > 0) {
@@ -239,6 +241,15 @@ export default function CasinoGameScreen() {
             south: isP1 ? (gameData.players.player1?.name || 'Player 1') : (gameData.players.player2?.name || 'Player 2'),
             north: isP1 ? (gameData.players.player2?.name || 'Player 2') : (gameData.players.player1?.name || 'Player 1'),
           });
+          
+          // Detect opponent draw: if opponent's hand increases in length
+          const prevLen = prevOpponentHandLength.current;
+          const currLen = northHand.length;
+          if (currLen > prevLen) {
+            setShowCenterCardUp(true);
+            animateCenterCardUp();
+          }
+          prevOpponentHandLength.current = currLen;
           
           // Clear syncing flag after a short delay
           setTimeout(() => {
@@ -531,6 +542,8 @@ export default function CasinoGameScreen() {
     setGame(newGameState);
     // Immediately update Firebase with the new game state
     await updateGameInFirebase(newGameState);
+    setShowCenterCard(true);
+    animateCenterCardDown();
   }
 
   // Handle new game
@@ -552,6 +565,36 @@ export default function CasinoGameScreen() {
   // Ensure refs arrays match hand lengths
   if (handCardRefs.current.length !== game.hands.south.length) {
     handCardRefs.current.length = game.hands.south.length;
+  }
+
+  const [showCenterCard, setShowCenterCard] = useState(false);
+  const centerCardY = useSharedValue(0);
+
+  const [showCenterCardUp, setShowCenterCardUp] = useState(false);
+  const centerCardYUp = useSharedValue(0);
+
+  const centerCardAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: centerCardY.value }],
+    opacity: 1 - centerCardY.value / (height / 2),
+  }));
+
+  const centerCardAnimStyleUp = useAnimatedStyle(() => ({
+    transform: [{ translateY: centerCardYUp.value }],
+    opacity: 1 + centerCardYUp.value / (height / 2),
+  }));
+
+  function animateCenterCardDown() {
+    centerCardY.value = 0;
+    centerCardY.value = withTiming(height, { duration: 2500 }, (finished) => {
+      if (finished) runOnJS(setShowCenterCard)(false);
+    });
+  }
+
+  function animateCenterCardUp() {
+    centerCardYUp.value = 0;
+    centerCardYUp.value = withTiming(-height, { duration: 2500 }, (finished) => {
+      if (finished) runOnJS(setShowCenterCardUp)(false);
+    });
   }
 
   // --- RENDER ---
@@ -654,6 +697,30 @@ export default function CasinoGameScreen() {
             <>
               {/* Discard and stock piles at center */}
               <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                {/* Permanent facedown card at animation start position */}
+                <TouchableOpacity
+                  onPress={() => handleDraw('south')}
+                  style={{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }, { translateY: 0 }], zIndex: 50 }}
+                >
+                  {getCardBack()}
+                </TouchableOpacity>
+                {/* Facedown card at center if toggled */}
+                {showCenterCard && (
+                  <Animated.View
+                    style={[{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }], zIndex: 100 }, centerCardAnimStyle]}
+                    pointerEvents="none"
+                  >
+                    {getCardBack()}
+                  </Animated.View>
+                )}
+                {showCenterCardUp && (
+                  <Animated.View
+                    style={[{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }], zIndex: 100 }, centerCardAnimStyleUp]}
+                    pointerEvents="none"
+                  >
+                    {getCardBack()}
+                  </Animated.View>
+                )}
                 <View style={styles.pilesRow}>
                   {/* Spacer to separate stock and discard piles */}
                   <View style={{ width: 32 }} />
@@ -694,6 +761,7 @@ export default function CasinoGameScreen() {
                   </View>
                 </View>
               </View>
+              
               {/* South hand (player) */}
               <ScrollView
                 horizontal
@@ -776,18 +844,6 @@ export default function CasinoGameScreen() {
                   })()
                 )}
               </View>
-              {/* Draw button for the current playing player (local user only) */}
-              {(() => {
-                if (isPlayer1 !== null) {
-                    // Always use 'south' for the local player
-                    return (
-                      <TouchableOpacity onPress={() => handleDraw('south')} style={styles.drawBtn}>
-                        <ThemedText style={styles.drawBtnText}>Draw</ThemedText>
-                      </TouchableOpacity>
-                    );
-                }
-                return null;
-              })()}
               {/* Suit chooser after 8 */}
               {choosingSuit && (
                 <View style={styles.suitChooserRow}>
