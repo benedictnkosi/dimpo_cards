@@ -599,15 +599,13 @@ export default function CasinoGameScreen() {
   }
 
   // Handle draw
-  async function handleDraw() {
+  async function handleDraw(player: Player) {
     // Only allow draw if it's the local player's turn
-
-    
     if (gamePhase !== 'playing') return;
     if (game.winner !== null || game.chooseSuit) return;
     // LOG discard pile before draw
     console.log('[DISCARD BEFORE DRAW]', JSON.stringify(game.discard));
-    const newGame = drawCard(game, game.turn);
+    const newGame = drawCard(game, player);
     setGame(newGame);
     // LOG discard pile after draw
     console.log('[DISCARD AFTER DRAW]', JSON.stringify(newGame.discard));
@@ -893,13 +891,15 @@ export default function CasinoGameScreen() {
                     canDraw
                   });
 
-                  if (canDraw && isLocalTurn) {
+                  
+                    // Determine the local player ('south' if isPlayer1, else 'north')
+                    const localPlayer: Player = isPlayer1 ? 'south' : 'north';
                     return (
-                      <TouchableOpacity onPress={handleDraw} style={styles.drawBtn}>
+                      <TouchableOpacity onPress={() => handleDraw(localPlayer)} style={styles.drawBtn}>
                         <ThemedText style={styles.drawBtnText}>Draw</ThemedText>
                       </TouchableOpacity>
                     );
-                  }
+                  
                 }
                 return null;
               })()}
