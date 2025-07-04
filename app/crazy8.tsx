@@ -462,7 +462,7 @@ export default function CasinoGameScreen() {
     if (gamePhase !== 'playing') {
       return;
     }
-    if (game.turn !== player || game.winner !== null || game.chooseSuit) {
+    if ( game.winner !== null || game.chooseSuit) {
       return;
     }
     const card = game.hands[player][idx];
@@ -544,6 +544,32 @@ export default function CasinoGameScreen() {
     await updateGameInFirebase(newGameState);
     setShowCenterCard(true);
     animateCenterCardDown();
+  }
+
+  // Handle undoing a play by moving top card from discard pile to player's hand
+  async function handleUndoPlay(player: Player) {
+    // Only allow undo if it's the local player's turn and there are cards in discard pile
+    if (gamePhase !== 'playing') return;
+    if (game.winner !== null || game.chooseSuit) return;
+    if (game.discard.length <= 1) return; // Need at least 2 cards to undo (1 to keep as top, 1 to move back)
+    
+    // Create a new game state with the top card moved back to player's hand
+    const newDiscard = [...game.discard];
+    const cardToUndo = newDiscard.pop()!; // Remove the top card
+    
+    const newGameState: GameState = {
+      ...game,
+      hands: {
+        ...game.hands,
+        [player]: [...game.hands[player], cardToUndo]
+      },
+      discard: newDiscard,
+      currentSuit: newDiscard.length > 0 ? newDiscard[newDiscard.length - 1].suit : game.currentSuit
+    };
+    
+    setGame(newGameState);
+    // Update Firebase with the new game state
+    await updateGameInFirebase(newGameState);
   }
 
   // Handle new game
@@ -732,9 +758,9 @@ export default function CasinoGameScreen() {
                   {/* Spacer to separate stock and discard piles */}
                   <View style={{ width: 32 }} />
                   {/* Discard pile - show previous and current discard stacked */}
-                  <View
-                    ref={discardRef}
-                    collapsable={false}
+                  <TouchableOpacity
+                    onPress={() => handleUndoPlay('south')}
+                    disabled={ game.winner !== null || game.chooseSuit || game.discard.length <= 1}
                     style={{
                       alignItems: 'center',
                       position: 'relative',
@@ -742,30 +768,45 @@ export default function CasinoGameScreen() {
                       minWidth: 120,
                     }}
                   >
-                    <View style={{ width: 120, height: 170, position: 'relative' }}>
-                      {previousDiscardCard && (
-                        <View style={{
-                          position: 'absolute',
-                          left: -32,
-                          top: 16,
-                          zIndex: 1,
-                          opacity: 0.7,
-                        }}>
-                          <CasinoCard suit={previousDiscardCard.suit} value={previousDiscardCard.value} style={{ width: 120, height: 170 }} />
-                        </View>
-                      )}
-                      {game.discard.length > 0 && (
-                        <View style={{
-                          position: 'absolute',
-                          left: 0,
-                          top: 0,
-                          zIndex: 2,
-                        }}>
-                          <CasinoCard suit={game.discard[game.discard.length - 1].suit} value={game.discard[game.discard.length - 1].value} style={{ width: 120, height: 170 }} />
-                        </View>
-                      )}
+                    <View
+                      ref={discardRef}
+                      collapsable={false}
+                      style={{
+                        alignItems: 'center',
+                        position: 'relative',
+                        minHeight: 170,
+                        minWidth: 120,
+                      }}
+                    >
+                      <View style={{ width: 120, height: 170, position: 'relative' }}>
+                        {previousDiscardCard && (
+                          <View style={{
+                            position: 'absolute',
+                            left: -32,
+                            top: 16,
+                            zIndex: 1,
+                            opacity: 0.7,
+                          }}>
+                            <CasinoCard suit={previousDiscardCard.suit} value={previousDiscardCard.value} style={{ width: 120, height: 170 }} />
+                          </View>
+                        )}
+                        {game.discard.length > 0 && (
+                          <View style={{
+                            position: 'absolute',
+                            left: 0,
+                            top: 0,
+                            zIndex: 2,
+                          }}>
+                            <CasinoCard suit={game.discard[game.discard.length - 1].suit} value={game.discard[game.discard.length - 1].value} style={{ width: 120, height: 170 }} />
+                          </View>
+                        )}
+                      </View>
                     </View>
-                  </View>
+                    {/* Show hint text when it's the player's turn and they can undo */}
+                    { game.winner === null && !game.chooseSuit && game.discard.length > 1 && (
+                      <ThemedText style={styles.undoHintText}>Tap to Undo</ThemedText>
+                    )}
+                  </TouchableOpacity>
                 </View>
               </View>
               
@@ -784,7 +825,7 @@ export default function CasinoGameScreen() {
                   >
                     <TouchableOpacity
                       onPress={() => handlePlay('south', idx)}
-                      disabled={game.turn !== 'south' || game.winner !== null || game.chooseSuit || !canPlay(card, game.discard[game.discard.length - 1], game.currentSuit)}
+                      disabled={ game.winner !== null || game.chooseSuit || !canPlay(card, game.discard[game.discard.length - 1], game.currentSuit)}
                     >
                       <CasinoCard suit={card.suit} value={card.value} style={{ width: 72, height: 104 }} />
                     </TouchableOpacity>
@@ -828,29 +869,7 @@ export default function CasinoGameScreen() {
                   )}
                 </View>
               ))}
-              {/* Turn indicator and winner */}
-              <View style={styles.statusRow}>
-                {game.winner !== null ? (
-                  <>
-                    <ThemedText style={styles.statusText}>{game.winner === 'south' ? 'You win!' : `${playerNames.north} wins!`}</ThemedText>
-                    <TouchableOpacity onPress={handleNewGame} style={styles.newGameBtn}>
-                      <ThemedText style={styles.newGameBtnText}>New Game</ThemedText>
-                    </TouchableOpacity>
-                  </>
-                ) : (
-                  (() => {
-                    const isLocalTurn = firebaseGameData ? isPlayersTurn(firebaseGameData, username || '') : false;
-                    const opponentName = playerNames.north === username ? playerNames.south : playerNames.north;
-                    return (
-                      <ThemedText style={styles.statusText}>
-                        {isLocalTurn
-                          ? 'Your turn'
-                          : `${opponentName}'s turn`}
-                      </ThemedText>
-                    );
-                  })()
-                )}
-              </View>
+              
               {/* Suit chooser after 8 */}
               {choosingSuit && (
                 <View style={styles.suitChooserRow}>
@@ -1087,5 +1106,13 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     opacity: 0.8,
     textAlign: 'center',
+  },
+  undoHintText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '500',
+    opacity: 0.8,
+    textAlign: 'center',
+    marginTop: 24,
   },
 });
