@@ -1,0 +1,226 @@
+{
+  "books": [
+    {
+      "book_id": "fantasy_001",
+      "genre": "Fantasy",
+      "sub_genre": "Epic Fantasy",
+      "chapter_number": 1,
+      "chapter_name": "The Beginning of the Quest",
+      "content": "In the mystical land of Eldoria, where magic flowed like rivers and dragons soared through the clouds, a young apprentice named Lyra stood at the edge of the ancient forest. Her heart pounded with excitement and fear as she prepared to embark on the greatest adventure of her life. The prophecy had foretold that a chosen one would rise to defeat the dark sorcerer who had plunged the realm into eternal night. Lyra clutched her grandmother's enchanted amulet, feeling its warm glow against her chest. 'You are ready, child,' whispered the wind through the leaves. 'The time has come.' With determination burning in her emerald eyes, Lyra took her first step into the unknown, ready to discover the power that lay dormant within her soul.",
+      "quiz": {
+        "questions": [
+          {
+            "question": "What is the name of the main character?",
+            "options": ["Lyra", "Eldoria", "Sorcerer", "Dragon"],
+            "correct_answer": "Lyra"
+          },
+          {
+            "question": "What type of land is Eldoria?",
+            "options": ["Desert", "Mystical", "Mountainous", "Oceanic"],
+            "correct_answer": "Mystical"
+          },
+          {
+            "question": "What did Lyra clutch as she began her quest?",
+            "options": ["A sword", "Her grandmother's amulet", "A map", "A book"],
+            "correct_answer": "Her grandmother's amulet"
+          }
+        ]
+      },
+      "images": {
+        "chapter_cover": "fantasy_chapter1_cover.jpg",
+        "illustrations": [
+          "lyra_forest.jpg",
+          "eldoria_landscape.jpg",
+          "enchanted_amulet.jpg"
+        ]
+      },
+      "word_count": 156,
+      "reading_level": "Intermediate"
+    },
+    {
+      "book_id": "mystery_001",
+      "genre": "Mystery",
+      "sub_genre": "Detective Fiction",
+      "chapter_number": 1,
+      "chapter_name": "The Disappearing Diamond",
+      "content": "Detective Sarah Chen adjusted her fedora as she stepped into the dimly lit mansion. The air was thick with tension and the faint scent of old money. The case was simple on the surface: a priceless diamond had vanished from the safe during a high-society party. But Sarah's instincts told her this was anything but simple. She examined the scene with practiced eyes, noting the undisturbed dust on the windowsill and the perfectly aligned books on the shelf. 'Too perfect,' she muttered to herself. The butler, a nervous man with trembling hands, claimed he had seen nothing unusual. The guests, all wealthy socialites with airtight alibis, seemed genuinely shocked. But Sarah knew that in cases like this, the truth was often hidden in the smallest details. She pulled out her magnifying glass and began her investigation, determined to uncover the truth behind the disappearing diamond.",
+      "quiz": {
+        "questions": [
+          {
+            "question": "What is Detective Chen's first name?",
+            "options": ["Sarah", "Susan", "Samantha", "Sophie"],
+            "correct_answer": "Sarah"
+          },
+          {
+            "question": "What item went missing?",
+            "options": ["A diamond", "A painting", "A necklace", "A watch"],
+            "correct_answer": "A diamond"
+          },
+          {
+            "question": "Where did the crime take place?",
+            "options": ["A mansion", "A hotel", "A museum", "A bank"],
+            "correct_answer": "A mansion"
+          }
+        ]
+      },
+      "images": {
+        "chapter_cover": "mystery_chapter1_cover.jpg",
+        "illustrations": [
+          "detective_chen.jpg",
+          "mansion_interior.jpg",
+          "diamond_safe.jpg"
+        ]
+      },
+      "word_count": 142,
+      "reading_level": "Advanced"
+    },
+    {
+      "book_id": "scifi_001",
+      "genre": "Science Fiction",
+      "sub_genre": "Space Opera",
+      "chapter_number": 1,
+      "chapter_name": "Beyond the Stars",
+      "content": "Captain Alex Rivera gripped the controls of the starship Aurora as it hurtled through the vast emptiness of space. The ship's engines hummed with the steady rhythm of advanced technology, propelling them toward the distant planet of Nova Prime. This was humanity's first contact mission, and the weight of history rested on Alex's shoulders. The crew of twelve specialists, each chosen for their expertise in various fields, worked quietly at their stations. Dr. Maya Patel, the xenobiologist, monitored her instruments for any signs of alien life. Engineer James Chen kept the ship's systems running smoothly. 'Approaching Nova Prime in ten minutes,' announced the ship's AI, Nova. Alex took a deep breath. Whatever awaited them on that mysterious world would change the course of human history forever. The stars stretched endlessly before them, a canvas of infinite possibilities.",
+      "quiz": {
+        "questions": [
+          {
+            "question": "What is the name of the starship?",
+            "options": ["Aurora", "Nova", "Stellar", "Cosmos"],
+            "correct_answer": "Aurora"
+          },
+          {
+            "question": "What is the captain's name?",
+            "options": ["Alex Rivera", "Maya Patel", "James Chen", "Nova"],
+            "correct_answer": "Alex Rivera"
+          },
+          {
+            "question": "What is their mission?",
+            "options": ["First contact", "Colonization", "Exploration", "War"],
+            "correct_answer": "First contact"
+          }
+        ]
+      },
+      "images": {
+        "chapter_cover": "scifi_chapter1_cover.jpg",
+        "illustrations": [
+          "starship_aurora.jpg",
+          "nova_prime_planet.jpg",
+          "space_bridge.jpg"
+        ]
+      },
+      "word_count": 134,
+      "reading_level": "Advanced"
+    },
+    {
+      "book_id": "romance_001",
+      "genre": "Romance",
+      "sub_genre": "Contemporary Romance",
+      "chapter_number": 1,
+      "chapter_name": "Love in the City",
+      "content": "Emma Thompson adjusted her glasses as she hurried down the bustling streets of New York City. The autumn leaves crunched beneath her feet, and the crisp air carried the promise of new beginnings. She was late for her interview at the prestigious publishing house, and her heart raced with both excitement and anxiety. As she rounded the corner, she collided with a tall stranger, sending her portfolio flying. Papers scattered across the sidewalk like autumn leaves. 'I'm so sorry!' she exclaimed, bending down to gather her work. The stranger, a handsome man with kind eyes and a warm smile, knelt beside her. 'No worries at all,' he said, his voice smooth and reassuring. 'Let me help you with that.' As their hands touched while reaching for the same paper, Emma felt a spark of electricity. Little did she know that this chance encounter would change her life forever.",
+      "quiz": {
+        "questions": [
+          {
+            "question": "What is the main character's name?",
+            "options": ["Emma", "Emily", "Eva", "Ella"],
+            "correct_answer": "Emma"
+          },
+          {
+            "question": "What city is the story set in?",
+            "options": ["New York", "Los Angeles", "Chicago", "Boston"],
+            "correct_answer": "New York"
+          },
+          {
+            "question": "What season is it?",
+            "options": ["Spring", "Summer", "Autumn", "Winter"],
+            "correct_answer": "Autumn"
+          }
+        ]
+      },
+      "images": {
+        "chapter_cover": "romance_chapter1_cover.jpg",
+        "illustrations": [
+          "emma_city.jpg",
+          "autumn_leaves.jpg",
+          "chance_encounter.jpg"
+        ]
+      },
+      "word_count": 128,
+      "reading_level": "Beginner"
+    },
+    {
+      "book_id": "adventure_001",
+      "genre": "Adventure",
+      "sub_genre": "Survival",
+      "chapter_number": 1,
+      "chapter_name": "Lost in the Wilderness",
+      "content": "The plane's engine sputtered and died, sending the small aircraft into a terrifying descent. Jake Martinez, a seasoned pilot, fought to control the failing aircraft as it plummeted toward the dense Amazon rainforest below. The emergency landing was rough, but somehow he survived the crash. Now, stranded in one of the most dangerous environments on Earth, Jake had to rely on his survival training and instincts. The humid air clung to his skin, and the sounds of the jungle surrounded him - the calls of exotic birds, the rustling of unseen creatures, and the distant roar of a jaguar. He checked his supplies: a water bottle, a knife, a lighter, and a first-aid kit. It wasn't much, but it would have to do. With the sun setting and night approaching, Jake knew he had to find shelter quickly. The Amazon was unforgiving, and survival was not guaranteed.",
+      "quiz": {
+        "questions": [
+          {
+            "question": "What is the pilot's name?",
+            "options": ["Jake", "John", "James", "Jason"],
+            "correct_answer": "Jake"
+          },
+          {
+            "question": "Where did the plane crash?",
+            "options": ["Amazon rainforest", "Sahara desert", "Arctic tundra", "Mountain range"],
+            "correct_answer": "Amazon rainforest"
+          },
+          {
+            "question": "What was the first thing Jake did after the crash?",
+            "options": ["Check supplies", "Find shelter", "Call for help", "Start a fire"],
+            "correct_answer": "Check supplies"
+          }
+        ]
+      },
+      "images": {
+        "chapter_cover": "adventure_chapter1_cover.jpg",
+        "illustrations": [
+          "plane_crash.jpg",
+          "amazon_rainforest.jpg",
+          "survival_gear.jpg"
+        ]
+      },
+      "word_count": 145,
+      "reading_level": "Intermediate"
+    },
+    {
+      "book_id": "horror_001",
+      "genre": "Horror",
+      "sub_genre": "Supernatural",
+      "chapter_number": 1,
+      "chapter_name": "The Old House",
+      "content": "The old Victorian house loomed before them, its dark windows staring like empty eyes. Maria Santos and her brother Carlos had inherited the property from their grandmother, but neither of them had ever visited the place. The air was thick with an oppressive silence, broken only by the creaking of the ancient floorboards beneath their feet. 'I don't like this place,' Carlos whispered, his voice barely audible. Maria agreed, but she was determined to explore. The house had been in their family for generations, and she wanted to understand its history. As they walked through the dusty rooms, they discovered strange symbols carved into the walls and an old diary hidden in a secret compartment. The diary's pages were filled with frantic handwriting, describing events that seemed impossible. 'Something terrible happened here,' Maria read aloud, her voice trembling. Suddenly, the temperature dropped, and they heard footsteps coming from the floor above.",
+      "quiz": {
+        "questions": [
+          {
+            "question": "What type of house is it?",
+            "options": ["Victorian", "Modern", "Colonial", "Cottage"],
+            "correct_answer": "Victorian"
+          },
+          {
+            "question": "Who inherited the house?",
+            "options": ["Maria and Carlos", "Just Maria", "Just Carlos", "Their parents"],
+            "correct_answer": "Maria and Carlos"
+          },
+          {
+            "question": "What did they find in the house?",
+            "options": ["A diary", "Gold", "A map", "A key"],
+            "correct_answer": "A diary"
+          }
+        ]
+      },
+      "images": {
+        "chapter_cover": "horror_chapter1_cover.jpg",
+        "illustrations": [
+          "victorian_house.jpg",
+          "dark_interior.jpg",
+          "old_diary.jpg"
+        ]
+      },
+      "word_count": 138,
+      "reading_level": "Advanced"
+    }
+  ]
+} 

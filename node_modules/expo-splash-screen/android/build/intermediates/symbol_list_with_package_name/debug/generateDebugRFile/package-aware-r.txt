@@ -1,0 +1,2 @@
+expo.modules.splashscreen
+color splashscreen_background
