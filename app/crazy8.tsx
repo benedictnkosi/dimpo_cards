@@ -65,21 +65,6 @@ function shuffle(deck: Card[]): Card[] {
   return arr;
 }
 
-// Utility to check if it is the local player's turn based on Firebase doc
-function isPlayersTurn(gameData: any, username: string): boolean {
-  
-  if (!gameData || !gameData.players || !username){
-   return false;
-  }
-  if (gameData.turn === 'player1') {
-    const isPlayer1 = gameData.players.player1?.name === username;
-    return isPlayer1;
-  } else if (gameData.turn === 'player2') {
-    const isPlayer2 = gameData.players.player2?.name === username;
-    return isPlayer2;
-  }
-  return false;
-}
 
 export default function CasinoGameScreen() {
   const { username } = useUsername();
@@ -117,19 +102,18 @@ export default function CasinoGameScreen() {
     zIndex: 100,
   }));
 
-  const animLastPlayedCardStyle = useAnimatedStyle(() => ({
-    position: 'absolute',
-    left: animCardX.value,
-    top: animCardY.value,
-    zIndex: 100,
-  }));
-
   const isMounted = useRef(true);
   const isSyncingToFirebase = useRef(false);
 
   // Track previous discard card when discard pile changes (for opponent plays)
   const lastDiscardRef = useRef<Card | null>(null);
   const prevOpponentHandLength = useRef<number>(0);
+
+  const [localTopCard, setLocalTopCard] = useState<Card | null>(null);
+  const prevDiscardLength = useRef<number>(0);
+
+  // 1. Add a ref array for north hand cards
+  const northHandCardRefs = useRef<(View | null)[]>([]);
 
   useEffect(() => {
     // Only run if discard pile has at least one card
@@ -475,6 +459,7 @@ export default function CasinoGameScreen() {
       setPreviousDiscardCard(game.discard[game.discard.length - 1]);
     }
     if (player === 'south') {
+      setLocalTopCard(card);
       setAnimatingCardIndex(idx);
       setAnimatingCard(card);
       InteractionManager.runAfterInteractions(() => {
@@ -499,8 +484,8 @@ export default function CasinoGameScreen() {
               }
               animCardX.value = x;
               animCardY.value = y;
-              animCardX.value = withTiming(dx, { duration: 500 });
-              animCardY.value = withTiming(dy, { duration: 500 }, (finished) => {
+              animCardX.value = withTiming(dx, { duration: 2500 });
+              animCardY.value = withTiming(dy, { duration: 2500 }, (finished) => {
                 if (finished) runOnJS(onPlayerCardAnimationEnd)(player, idx);
               });
             });
@@ -542,7 +527,7 @@ export default function CasinoGameScreen() {
     setGame(newGameState);
     // Immediately update Firebase with the new game state
     await updateGameInFirebase(newGameState);
-    setShowCenterCard(true);
+    setShowCenterCardDown(true);
     animateCenterCardDown();
   }
 
@@ -572,15 +557,6 @@ export default function CasinoGameScreen() {
     await updateGameInFirebase(newGameState);
   }
 
-  // Handle new game
-  function handleNewGame() {
-    setGame(initGame());
-    setChoosingSuit(false);
-    setGamePhase('init');
-    setOpponentLastPlayedCard(null);
-    setPreviousDiscardCard(null);
-  }
-
   // Helper for animation end
   function onPlayerCardAnimationEnd(player: Player, idx: number) {
     finishAnimation();
@@ -593,35 +569,74 @@ export default function CasinoGameScreen() {
     handCardRefs.current.length = game.hands.south.length;
   }
 
-  const [showCenterCard, setShowCenterCard] = useState(false);
-  const centerCardY = useSharedValue(0);
+  // Center card from middle to down (for draw animation)
+  const [showCenterCardDown, setShowCenterCardDown] = useState(false);
+  const centerCardDownY = useSharedValue(0);
 
+  // Center card from top to middle (for opponent play animation)
+  const [showCenterCardTopToMiddle, setShowCenterCardTopToMiddle] = useState(false);
+  const centerCardTopToMiddleY = useSharedValue(0);
+
+  // Center card from middle to up (for opponent draw animation)
   const [showCenterCardUp, setShowCenterCardUp] = useState(false);
-  const centerCardYUp = useSharedValue(0);
+  const centerCardUpY = useSharedValue(0);
 
-  const centerCardAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: centerCardY.value }],
-    opacity: 1 - centerCardY.value / (height / 2),
+  const centerCardDownAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: centerCardDownY.value }],
+    opacity: 1 - centerCardDownY.value / (height / 2),
   }));
 
-  const centerCardAnimStyleUp = useAnimatedStyle(() => ({
-    transform: [{ translateY: centerCardYUp.value }],
-    opacity: 1 + centerCardYUp.value / (height / 2),
+  const centerCardTopToMiddleAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: centerCardTopToMiddleY.value }],
+    opacity: 1 + centerCardTopToMiddleY.value / (height / 2),
+  }));
+
+  const centerCardUpAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: centerCardUpY.value }],
+    opacity: 1 + centerCardUpY.value / (height / 2),
   }));
 
   function animateCenterCardDown() {
-    centerCardY.value = 0;
-    centerCardY.value = withTiming(height, { duration: 2500 }, (finished) => {
-      if (finished) runOnJS(setShowCenterCard)(false);
+    centerCardDownY.value = 0;
+    centerCardDownY.value = withTiming(height, { duration: 2500 }, (finished) => {
+      if (finished) runOnJS(setShowCenterCardDown)(false);
     });
   }
 
   function animateCenterCardUp() {
-    centerCardYUp.value = 0;
-    centerCardYUp.value = withTiming(-height, { duration: 2500 }, (finished) => {
+    centerCardUpY.value = 0.29;
+    centerCardUpY.value = withTiming(-height, { duration: 2500 }, (finished) => {
       if (finished) runOnJS(setShowCenterCardUp)(false);
     });
   }
+
+  function animateCenterCardTopToMiddle() {
+    centerCardTopToMiddleY.value = -(height * 0.29); // Start from 10% from the top
+    centerCardTopToMiddleY.value = withTiming(0, { duration: 2500 }, (finished) => {
+      if (finished) runOnJS(setShowCenterCardTopToMiddle)(false);
+    });
+  }
+
+  // 3. In the useEffect that detects opponent play, measure the north hand card and animate from there
+  useEffect(() => {
+    if (game.discard.length > 0) {
+      const topCard = game.discard[game.discard.length - 1];
+      if (
+        localTopCard &&
+        (localTopCard.suit !== topCard.suit || localTopCard.value !== topCard.value)
+      ) {
+        // Opponent has added a card
+        const added = game.discard.length - prevDiscardLength.current;
+        if (added > 0) {
+          console.log(`Opponent added ${added} card(s) to the pile.`);
+                  // Find the index of the card that was just played (assume it's the last in north hand before update)
+        setShowCenterCardTopToMiddle(true);
+          animateCenterCardTopToMiddle();
+        }
+      }
+      prevDiscardLength.current = game.discard.length;
+    }
+  }, [game.discard]);
 
   // --- RENDER ---
   if (screen === 'welcome') {
@@ -656,6 +671,7 @@ export default function CasinoGameScreen() {
 
   return (
     <View style={{ flex: 1, position: 'relative' }}>
+      
       {/* Animated card at root level for correct absolute positioning */}
       {animatingCard && (
         <Animated.View
@@ -667,23 +683,7 @@ export default function CasinoGameScreen() {
       )}
 
       {/* Box animation demo (like the test page) */}
-      <View style={{ position: 'absolute', bottom: 80, left: 0, right: 0, alignItems: 'center' }}>
-        <Animated.View
-          style={[{
-            width: 100,
-            height: 100,
-            backgroundColor: '#19C37D',
-            borderRadius: 16,
-            marginBottom: 16,
-          }, boxAnimatedStyle]}
-        />
-        <Button
-          title="Animate Box"
-          onPress={() => {
-            boxOffset.value = withTiming(boxOffset.value === 0 ? 150 : 0, { duration: 600 });
-          }}
-        />
-      </View>
+      
       <ThemedView style={styles.container}>
         <LinearGradient
           colors={["#43e97b", "#38f9d7", "#22c55e"]}
@@ -737,21 +737,43 @@ export default function CasinoGameScreen() {
                   </TouchableOpacity>
                   <ThemedText style={styles.drawHintText}>Tap to Draw</ThemedText>
                 </View>
-                {/* Facedown card at center if toggled */}
-                {showCenterCard && (
+                {/* Center card from middle to down (for draw animation) */}
+                {showCenterCardDown && (
                   <Animated.View
-                    style={[{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }], zIndex: 100 }, centerCardAnimStyle]}
+                    style={[{ position: 'absolute', top: '45%', left: '20%', transform: [{ translateX: -28 }], zIndex: 100 }, centerCardDownAnimStyle]}
                     pointerEvents="none"
                   >
-                    {getCardBack()}
+                    <Image
+                      source={require('../assets/images/facedown-card.png')}
+                      style={{ width: 56, height: 80, borderRadius: 10, marginHorizontal: 6 }}
+                      resizeMode="contain"
+                    />
                   </Animated.View>
                 )}
-                {showCenterCardUp && (
+                {/* Center card from top to middle (for opponent play animation) */}
+                {showCenterCardTopToMiddle && (
                   <Animated.View
-                    style={[{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }], zIndex: 100 }, centerCardAnimStyleUp]}
+                    style={[{ position: 'absolute', top: '50%', left: '20%', transform: [{ translateX: -28 }], zIndex: 100 }, centerCardTopToMiddleAnimStyle]}
                     pointerEvents="none"
                   >
-                    {getCardBack()}
+                    <Image
+                      source={require('../assets/images/facedown-card.png')}
+                      style={{ width: 56, height: 80, borderRadius: 10, marginHorizontal: 6 }}
+                      resizeMode="contain"
+                    />
+                  </Animated.View>
+                )}
+                {/* Center card from middle to up (for opponent draw animation) */}
+                {showCenterCardUp && (
+                  <Animated.View
+                    style={[{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }], zIndex: 100 }, centerCardUpAnimStyle]}
+                    pointerEvents="none"
+                  >
+                    <Image
+                      source={require('../assets/images/facedown-card.png')}
+                      style={{ width: 56, height: 80, borderRadius: 10, marginHorizontal: 6 }}
+                      resizeMode="contain"
+                    />
                   </Animated.View>
                 )}
                 <View style={styles.pilesRow}>
@@ -859,6 +881,7 @@ export default function CasinoGameScreen() {
                         {game.hands.north.map((card, idx) => (
                           <View
                             key={`${card.suit}-${card.value}-${idx}`}
+                            ref={ref => (northHandCardRefs.current[idx] = ref)}
                             style={{ marginLeft: idx === 0 ? 0 : -32, zIndex: idx }}
                           >
                             {getCardBack()}
