@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Image, View, StyleSheet, TouchableOpacity, Dimensions, Alert, ScrollView, findNodeHandle, InteractionManager, Animated as LegacyAnimated, Button, Linking, Modal } from 'react-native';
+import { Image, View, StyleSheet, TouchableOpacity, Dimensions, Alert, ScrollView, findNodeHandle, InteractionManager, Animated as LegacyAnimated, Button, Linking, Modal, ActivityIndicator } from 'react-native';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import ThemedView from './components/ThemedView';
 import ThemedText from './components/ThemedText';
 import { LinearGradient } from 'expo-linear-gradient';
 import CasinoCard from './components/CasinoCard';
-import GameLobby from './components/GameLobby';
 import {
   initGame,
   playCard,
@@ -17,13 +17,12 @@ import {
 } from '@/app/crazyEightsGame';
 import cards from '@/app/cards.json';
 import { db } from '@/config/firebase';
-import { collection, addDoc, onSnapshot, query, where, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, getDocs } from 'firebase/firestore';
+import {  onSnapshot,  serverTimestamp, doc, updateDoc, getDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { useUsername } from '@/hooks/useUsername';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS } from 'react-native-reanimated';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { getPlayer } from '@/services/playersService';
-import whatsappIcon from '../assets/images/whatsapp.png';
-import { useAuth } from './contexts/AuthContext';
+import { useAuth } from '@/contexts/AuthContext';
 
 const { width, height } = Dimensions.get('window');
 
@@ -34,18 +33,6 @@ const AVATARS = [
   require('../assets/images/avatars/4.png'),
 ];
 
-const COMMUNITY_CARDS = [
-  { suit: '♦', value: '9' },
-  { suit: '♦', value: 'A' },
-  { suit: '♠', value: 'Q' },
-  { suit: '♥', value: 'Q' },
-  { suit: '♦', value: 'J' },
-];
-
-const MAIN_PLAYER_CARDS = [
-  { suit: '♥', value: '10' },
-  { suit: '♠', value: '10' },
-];
 
 // Number of cards to deal to each player
 const CARDS_PER_PLAYER = 4; // Changed back to 4 cards per player
@@ -71,8 +58,9 @@ function shuffle(deck: Card[]): Card[] {
 }
 
 export default function CasinoGameScreen() {
-  const { username } = useUsername();
-  const { user } = useAuth();
+  const { username, isLoading: usernameLoading } = useUsername();
+  const { user, isLoading: authLoading } = useAuth();
+  const { gameId } = useLocalSearchParams();
   const [game, setGame] = useState<GameState>(initGame());
   const [firebaseGameData, setFirebaseGameData] = useState<any>(null);
   const [choosingSuit, setChoosingSuit] = useState(false);
@@ -119,13 +107,43 @@ export default function CasinoGameScreen() {
   const [showGameCancelledPopup, setShowGameCancelledPopup] = useState(false);
   const [cancelledGameInfo, setCancelledGameInfo] = useState<{cancelledBy: string, reason: string} | null>(null);
 
-  // Log when opponentPhoneNumber changes
-  useEffect(() => {
-    console.log('📱 opponentPhoneNumber state changed:', opponentPhoneNumber);
-  }, [opponentPhoneNumber]);
-
   // 1. Add a ref array for north hand cards
   const northHandCardRefs = useRef<(View | null)[]>([]);
+
+  // Add at the top of the component, after other refs:
+  const autoDealtRef = useRef(false);
+
+  // Reset autoDealtRef if game resets or new gameId
+  useEffect(() => {
+    if (gamePhase === 'init') {
+      autoDealtRef.current = false;
+    }
+  }, [gamePhase, currentGameId]);
+
+  // Improved auto-deal effect with logging
+  useEffect(() => {
+    // Log all relevant values for debugging
+    console.log('[AUTO-DEAL] Effect running');
+    console.log('[AUTO-DEAL] gamePhase:', gamePhase);
+    console.log('[AUTO-DEAL] isPlayer1:', isPlayer1);
+    console.log('[AUTO-DEAL] firebaseGameData.status:', firebaseGameData?.status);
+    console.log('[AUTO-DEAL] player1 name:', firebaseGameData?.players?.player1?.name);
+    console.log('[AUTO-DEAL] player2 name:', firebaseGameData?.players?.player2?.name);
+    console.log('[AUTO-DEAL] autoDealtRef.current:', autoDealtRef.current);
+
+    if (
+      gamePhase === 'init' &&
+      isPlayer1 === true &&
+      firebaseGameData?.status === 'started' &&
+      firebaseGameData?.players?.player1?.name &&
+      firebaseGameData?.players?.player2?.name &&
+      !autoDealtRef.current
+    ) {
+      console.log('[AUTO-DEAL] All conditions met, calling handleDeal()');
+      autoDealtRef.current = true;
+      handleDeal();
+    }
+  }, [gamePhase, isPlayer1, firebaseGameData, currentGameId]);
 
   useEffect(() => {
     // Only run if discard pile has at least one card
@@ -150,7 +168,13 @@ export default function CasinoGameScreen() {
     return () => { isMounted.current = false; };
   }, []);
 
-
+  // Initialize currentGameId from URL params
+  useEffect(() => {
+    if (gameId && typeof gameId === 'string') {
+      setCurrentGameId(gameId);
+      setScreen('game');
+    }
+  }, [gameId]);
 
   // Listen for current game updates
   useEffect(() => {
@@ -189,11 +213,13 @@ export default function CasinoGameScreen() {
           // Set syncing flag to prevent auto-sync during Firebase update
           isSyncingToFirebase.current = true;
           
-          // Determine if current user is player1 or player2
+          // Replace the old isP1 logic with UID-based logic and add logging
           let isP1 = false;
-          if (gameData.players.player1?.name && username && gameData.players.player1.name === username) {
+          if (gameData.players.player1?.uid && user?.uid && gameData.players.player1.uid === user.uid) {
+            console.log('[PLAYER DETECT] user.uid:', user.uid, '== player1.uid:', gameData.players.player1.uid, '-> isPlayer1: true');
             isP1 = true;
-          } else if (gameData.players.player2?.name && username && gameData.players.player2.name === username) {
+          } else if (gameData.players.player2?.uid && user?.uid && gameData.players.player2.uid === user.uid) {
+            console.log('[PLAYER DETECT] user.uid:', user.uid, '== player2.uid:', gameData.players.player2.uid, '-> isPlayer1: false');
             isP1 = false;
           }
           setIsPlayer1(isP1);
@@ -251,8 +277,8 @@ export default function CasinoGameScreen() {
             setGamePhase('playing');
           }
           setPlayerNames({
-            south: isP1 ? (gameData.players.player1?.name || 'Player 1') : (gameData.players.player2?.name || 'Player 2'),
-            north: isP1 ? (gameData.players.player2?.name || 'Player 2') : (gameData.players.player1?.name || 'Player 1'),
+            south: isP1 ? (gameData.players.player1?.name || username) : (gameData.players.player2?.name || 'Player 2'),
+            north: isP1 ? (gameData.players.player2?.name || 'Player 2') : (gameData.players.player1?.name || username),
           });
           
           // Detect opponent draw: if opponent's hand increases in length
@@ -270,7 +296,6 @@ export default function CasinoGameScreen() {
           }, 200);
           
           // Fetch opponent's phone number
-          console.log('🔄 Calling fetchOpponentPhoneNumber from useEffect');
           fetchOpponentPhoneNumber();
           
           // Also try to fetch immediately if we have the data
@@ -278,14 +303,11 @@ export default function CasinoGameScreen() {
             const opponentPlayerKey = isP1 ? 'player2' : 'player1';
             const opponentData = gameData.players[opponentPlayerKey];
             if (opponentData?.uid) {
-              console.log('🚀 Immediate fetch attempt for UID:', opponentData.uid);
               getPlayer(opponentData.uid).then(opponentPlayer => {
                 if (opponentPlayer?.whatsappNumber) {
-                  console.log('✅ Immediate fetch successful:', opponentPlayer.whatsappNumber);
                   setOpponentPhoneNumber(opponentPlayer.whatsappNumber);
                 }
               }).catch(error => {
-                console.error('❌ Immediate fetch failed:', error);
               });
             }
           }
@@ -338,7 +360,6 @@ export default function CasinoGameScreen() {
     setShowGameCancelledPopup(false);
     setCancelledGameInfo(null);
     setCurrentGameId(null);
-    setScreen('welcome');
     router.push('/');
   };
 
@@ -346,11 +367,8 @@ export default function CasinoGameScreen() {
   async function handleLeaveGame() {
     if (!currentGameId || isPlayer1 === null) return;
     
-    const action = isPlayer1 ? 'cancel' : 'leave';
-    const title = isPlayer1 ? 'Cancel Game' : 'Leave Game';
-    const message = isPlayer1 
-      ? 'Are you sure you want to cancel this game? This will delete the game entirely.'
-      : 'Are you sure you want to leave this game?';
+    const title = 'Leave Game';
+    const message = 'Are you sure you want to leave this game? This will delete the game entirely.';
     
     Alert.alert(
       title,
@@ -367,37 +385,26 @@ export default function CasinoGameScreen() {
             try {
               const gameDocRef = doc(db, 'games', currentGameId);
               
-              if (isPlayer1) {
-                // If player 1 is leaving, set status to cancelled instead of deleting immediately
-                // This allows the opponent to see the cancellation popup
-                await updateDoc(gameDocRef, {
-                  status: 'cancelled',
-                  cancelledBy: username || 'Host',
-                  cancellationReason: 'Game was cancelled by the host',
-                  cancelledAt: serverTimestamp(),
-                });
-                
-                // Delete the game after a short delay to allow popup to show
-                setTimeout(async () => {
-                  try {
-                    await deleteDoc(gameDocRef);
-                  } catch (err) {
-                    console.error('Error deleting cancelled game:', err);
-                  }
-                }, 3000); // 3 second delay
-              } else {
-                // If player 2 is leaving, remove player2 and set status back to 'waiting'
-                await updateDoc(gameDocRef, {
-                  status: 'waiting',
-                  'players.player2': null,
-                });
-              }
+              // Both player 1 and player 2 will delete the game when leaving
+              // Set status to cancelled first to show popup to opponent
+              await updateDoc(gameDocRef, {
+                status: 'cancelled',
+                cancelledBy: username || 'Player',
+                cancellationReason: 'Game was cancelled',
+                cancelledAt: serverTimestamp(),
+              });
+              
+              // Delete the game after a short delay to allow popup to show
+              setTimeout(async () => {
+                try {
+                  await deleteDoc(gameDocRef);
+                } catch (err) {
+                }
+              }, 3000); // 3 second delay
               
               // Reset local state
               setCurrentGameId(null);
-              router.push('/');
             } catch (err) {
-              console.error('Error leaving game:', err);
               Alert.alert('Error', 'Failed to leave the game. Please try again.');
             }
           },
@@ -408,12 +415,7 @@ export default function CasinoGameScreen() {
 
   // Fetch opponent's phone number from players collection
   async function fetchOpponentPhoneNumber() {
-    console.log('🔍 fetchOpponentPhoneNumber called');
-    console.log('firebaseGameData?.players:', firebaseGameData?.players);
-    console.log('isPlayer1:', isPlayer1);
-    
     if (!firebaseGameData?.players || isPlayer1 === null) {
-      console.log('❌ Early return: missing game data or player1 status');
       return;
     }
     
@@ -421,31 +423,19 @@ export default function CasinoGameScreen() {
       const opponentPlayerKey = isPlayer1 ? 'player2' : 'player1';
       const opponentData = firebaseGameData.players[opponentPlayerKey];
       
-      console.log('opponentPlayerKey:', opponentPlayerKey);
-      console.log('opponentData:', opponentData);
-      
       if (opponentData?.uid) {
-        console.log('🔍 Fetching player data for UID:', opponentData.uid);
         const opponentPlayer = await getPlayer(opponentData.uid);
-        console.log('opponentPlayer:', opponentPlayer);
         
         if (opponentPlayer?.whatsappNumber) {
-          console.log('✅ Setting opponent phone number:', opponentPlayer.whatsappNumber);
           setOpponentPhoneNumber(opponentPlayer.whatsappNumber);
-        } else {
-          console.log('❌ No WhatsApp number found for opponent');
         }
-      } else {
-        console.log('❌ No opponent UID found');
       }
     } catch (error) {
-      console.error('Error fetching opponent phone number:', error);
     }
   }
 
   // Manual test function for debugging
   async function testFetchPhoneNumber() {
-    console.log('🧪 Manual test: fetchOpponentPhoneNumber');
     await fetchOpponentPhoneNumber();
   }
 
@@ -463,26 +453,20 @@ export default function CasinoGameScreen() {
       // Handle South African numbers: if starts with 0, remove it and add +27
       if (formattedNumber.startsWith('0')) {
         formattedNumber = '+27' + formattedNumber.substring(1);
-        console.log('🇿🇦 Converting SA number:', opponentPhoneNumber, '→', formattedNumber);
       }
-      
-      console.log('📞 Opening WhatsApp with number:', formattedNumber);
       
       // Try to open WhatsApp directly
       const whatsappUrl = `whatsapp://send?phone=${formattedNumber}`;
       
       const supported = await Linking.canOpenURL(whatsappUrl);
       if (supported) {
-        console.log('✅ Opening WhatsApp app');
         await Linking.openURL(whatsappUrl);
       } else {
         // Fallback to web WhatsApp
-        console.log('🌐 Opening web WhatsApp');
         const webWhatsappUrl = `https://wa.me/${formattedNumber}`;
         await Linking.openURL(webWhatsappUrl);
       }
     } catch (error) {
-      console.error('Error opening WhatsApp:', error);
       Alert.alert('Error', 'Could not open WhatsApp. Please try again.');
     }
   }
@@ -499,22 +483,20 @@ export default function CasinoGameScreen() {
       const currentGameDoc = await getDoc(gameDocRef);
       const currentGameData = currentGameDoc.exists() ? currentGameDoc.data() : null;
       
-      console.log('🔄 updateGameInFirebase - preserving UIDs');
-      console.log('Current game data players:', currentGameData?.players);
+      // Use current username with fallbacks
+      const currentUsername = username || user?.displayName || user?.email?.split('@')[0] || 'Player';
       
       // Prepare the update data
       const updateData: any = {
         players: {
           player1: {
-            name: isPlayer1 ? (username || 'Player') : playerNames.north,
+            name: currentGameData?.players?.player1?.name || 'Player 1',
             hand: isPlayer1 ? gameState.hands.south : gameState.hands.north,
-            // Preserve existing UID if it exists
             ...(currentGameData?.players?.player1?.uid && { uid: currentGameData.players.player1.uid }),
           },
           player2: {
-            name: isPlayer1 ? playerNames.north : (username || 'Player'),
+            name: currentGameData?.players?.player2?.name || 'Player 2',
             hand: isPlayer1 ? gameState.hands.north : gameState.hands.south,
-            // Preserve existing UID if it exists
             ...(currentGameData?.players?.player2?.uid && { uid: currentGameData.players.player2.uid }),
           },
         },
@@ -526,8 +508,6 @@ export default function CasinoGameScreen() {
         lastUpdated: serverTimestamp(),
       };
       
-      console.log('Updated game data players:', updateData.players);
-      
       // Add lastCardPlayed to the appropriate player object if provided
       if (lastCardPlayed) {
         const playerKey = isPlayer1 ? 'player1' : 'player2';
@@ -536,8 +516,6 @@ export default function CasinoGameScreen() {
       
       await updateDoc(gameDocRef, updateData);
     } catch (err) {
-      console.error('Error updating game in Firebase:', err);
-      // Don't throw the error, just log it to prevent crashes
     }
   }
 
@@ -707,17 +685,13 @@ export default function CasinoGameScreen() {
     if (gamePhase !== 'playing') return;
     if (game.winner !== null || game.chooseSuit) return;
     // Compute the new game state after drawing a card
-    console.log('old game state', game);
     const newGameState = drawCard(game, player);
-    console.log('new game state', newGameState);
     setGame(newGameState);
     // Immediately update Firebase with the new game state
     await updateGameInFirebase(newGameState);
     setShowCenterCardDown(true);
     animateCenterCardDown();
   }
-
-
 
   // Handle undoing a play by moving top card from discard pile to player's hand
   async function handleUndoPlay(player: Player) {
@@ -766,6 +740,7 @@ export default function CasinoGameScreen() {
 
   // Center card from top to middle (for opponent play animation)
   const [showCenterCardTopToMiddle, setShowCenterCardTopToMiddle] = useState(false);
+  const [centerCardTopToMiddleCard, setCenterCardTopToMiddleCard] = useState<Card | null>(null);
   const centerCardTopToMiddleY = useSharedValue(0);
 
   // Center card from middle to up (for opponent draw animation)
@@ -802,9 +777,13 @@ export default function CasinoGameScreen() {
   }
 
   function animateCenterCardTopToMiddle() {
+    console.log('animateCenterCardTopToMiddle');
     centerCardTopToMiddleY.value = -(height * 0.29); // Start from 10% from the top
     centerCardTopToMiddleY.value = withTiming(0, { duration: 2500 }, (finished) => {
-      if (finished) runOnJS(setShowCenterCardTopToMiddle)(false);
+      if (finished) {
+        runOnJS(setShowCenterCardTopToMiddle)(false);
+        runOnJS(setCenterCardTopToMiddleCard)(null);
+      }
     });
   }
 
@@ -816,41 +795,29 @@ export default function CasinoGameScreen() {
         localTopCard &&
         (localTopCard.suit !== topCard.suit || localTopCard.value !== topCard.value)
       ) {
-        // Opponent has added a card
-        const added = game.discard.length - prevDiscardLength.current;
-        if (added > 0) {
-          console.log(`Opponent added ${added} card(s) to the pile.`);
-                  // Find the index of the card that was just played (assume it's the last in north hand before update)
-        setShowCenterCardTopToMiddle(true);
+        console.log('opponent has added a card');
+  
+          setCenterCardTopToMiddleCard(topCard);
+          setShowCenterCardTopToMiddle(true);
           animateCenterCardTopToMiddle();
-        }
+        
+      }else{
+        console.log('opponent has not added a card');
       }
       prevDiscardLength.current = game.discard.length;
     }
   }, [game.discard]);
 
+  // Add a loading state: show spinner if auth is loading, user is not loaded, or firebaseGameData is not loaded
+  // Note: We don't wait for usernameLoading because we can use user.displayName as fallback
+  const isLoading = authLoading || !user?.uid || !firebaseGameData;
 
-
-  // Only show the playful welcome screen if:
-  // - screen === 'welcome' OR
-  // - firebaseGameData?.status === 'waiting' OR firebaseGameData?.status === 'pending_acceptance'
-  // If firebaseGameData?.status === 'started', show the game table view.
-  const showWelcome = (screen === 'welcome') || (firebaseGameData && (firebaseGameData.status === 'waiting' || firebaseGameData.status === 'pending_acceptance'));
-  if (showWelcome) {
-    // Determine if the current user is player1 (host)
-    const currentUserUid = user?.uid;
-    const player1Uid = firebaseGameData?.players?.player1?.uid;
-    const isPlayer1 = Boolean(currentUserUid && player1Uid && currentUserUid === player1Uid);
+  if (isLoading) {
     return (
-      <GameLobby
-        onGameStarted={handleGameStarted}
-        onGameJoined={handleGameJoined}
-        onCancelGame={handleCancelGame}
-        currentGameId={currentGameId}
-        firebaseGameData={firebaseGameData}
-        isPlayer1={isPlayer1}
-        gameType="crazy8"
-      />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#14532d' }}>
+        <ActivityIndicator size="large" color="#FFD700" />
+        <ThemedText style={{ color: '#FFD700', marginTop: 16, fontSize: 18 }}>Loading game...</ThemedText>
+      </View>
     );
   }
 
@@ -880,36 +847,18 @@ export default function CasinoGameScreen() {
           {gamePhase === 'init' && (
             <View style={styles.initCenterFixed}>
               {/* Big deck with glow */}
-              <View style={styles.bigDeckContainer}>
-                <View style={styles.bigDeckGlow} />
-                <Image
-                  source={require('../assets/images/facedown-card.png')}
-                  style={styles.bigDeckImage}
-                  resizeMode="contain"
-                />
-              </View>
+              
               {/* Deal button only for player 1, waiting message for player 2 */}
               {firebaseGameData?.status === 'started' && firebaseGameData?.players?.player2?.name ? (
-                isPlayer1 ? (
-                  <TouchableOpacity style={styles.dealBtnModernBig} onPress={handleDeal}>
-                    <ThemedText style={styles.dealBtnTextModernBig}>🎲 Deal Cards</ThemedText>
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.waitingContainer}>
-                    <ThemedText style={styles.waitingMessage}>Waiting for Player 1 to deal...</ThemedText>
-                    <TouchableOpacity style={styles.leaveGameBtn} onPress={handleLeaveGame}>
-                      <ThemedText style={styles.leaveGameBtnText}>🚪 Leave Game</ThemedText>
-                    </TouchableOpacity>
+                isPlayer1 ? null : (
+                  <View style={{ alignItems: 'center', marginTop: 32 }}>
+                    <ActivityIndicator size="large" color="#FFD700" style={{ marginBottom: 16 }} />
+                    <ThemedText style={{ color: '#FFD700', fontSize: 18, fontWeight: 'bold', textAlign: 'center' }}>
+                      Waiting for host to deal the cards...
+                    </ThemedText>
                   </View>
                 )
-              ) : (
-                <View style={styles.waitingContainer}>
-                  <ThemedText style={styles.waitingMessage}>Waiting for opponent to join...</ThemedText>
-                  <TouchableOpacity style={styles.leaveGameBtn} onPress={handleLeaveGame}>
-                    <ThemedText style={styles.leaveGameBtnText}>🚪 Cancel Game</ThemedText>
-                  </TouchableOpacity>
-                </View>
-              )}
+              ) : null}
             </View>
           )}
           {/* DEALING PHASE: Animate cards being dealt */}
@@ -963,16 +912,12 @@ export default function CasinoGameScreen() {
                   </Animated.View>
                 )}
                 {/* Center card from top to middle (for opponent play animation) */}
-                {showCenterCardTopToMiddle && (
+                {showCenterCardTopToMiddle && centerCardTopToMiddleCard && (
                   <Animated.View
                     style={[{ position: 'absolute', top: '50%', left: '20%', transform: [{ translateX: -28 }], zIndex: 100 }, centerCardTopToMiddleAnimStyle]}
                     pointerEvents="none"
                   >
-                    <Image
-                      source={require('../assets/images/facedown-card.png')}
-                      style={{ width: 56, height: 80, borderRadius: 10, marginHorizontal: 6 }}
-                      resizeMode="contain"
-                    />
+                    <CasinoCard suit={centerCardTopToMiddleCard.suit} value={centerCardTopToMiddleCard.value} style={{ width: 56, height: 80 }} />
                   </Animated.View>
                 )}
                 {/* Center card from middle to up (for opponent draw animation) */}
@@ -1139,21 +1084,35 @@ export default function CasinoGameScreen() {
           )}
         </LinearGradient>
         
+        {/* Leave game button - bottom left */}
+        {gamePhase === 'playing' && (
+          <View style={styles.leaveGameButtonWrapper}>
+            <View style={styles.leaveGameGlow} />
+            <TouchableOpacity
+              style={styles.leaveGameButtonBottomLeft}
+              onPress={handleLeaveGame}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="exit-to-app" size={28} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        )}
+        
         {/* WhatsApp call button - bottom right */}
         {gamePhase === 'playing' && opponentPhoneNumber && (
           <View style={styles.whatsappCallButtonWrapper}>
+            <View style={styles.whatsappCallGlow} />
             <TouchableOpacity
               style={styles.whatsappCallButtonBottomRight}
               onPress={handleWhatsAppCall}
               activeOpacity={0.7}
             >
               <Image
-                source={whatsappIcon}
+                source={require('../assets/images/whatsapp.png')}
                 style={{ width: 32, height: 32 }}
                 resizeMode="contain"
               />
             </TouchableOpacity>
-            <View style={styles.whatsappCallGlow} />
           </View>
         )}
       </ThemedView>
@@ -1172,7 +1131,7 @@ export default function CasinoGameScreen() {
             </View>
             <View style={styles.modalBody}>
               <ThemedText style={styles.modalMessage}>
-                {cancelledGameInfo?.cancelledBy || 'Opponent'} cancelled the game.
+                Player cancelled the game.
               </ThemedText>
               <ThemedText style={styles.modalSubMessage}>
                 {cancelledGameInfo?.reason || 'The game has been cancelled.'}
@@ -1768,6 +1727,47 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 8,
   },
+  whatsappCallButtonWrapper: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    width: 64,
+    height: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  whatsappCallGlow: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(37, 211, 102, 0.3)',
+    shadowColor: '#25D366',
+    shadowOpacity: 0.6,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 0 },
+    zIndex: 0,
+  },
+  whatsappCallButtonBottomRight: {
+    position: 'absolute',
+    left: 8,
+    top: 8,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#25D366',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#25D366',
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    zIndex: 1,
+  },
   whatsappCallButton: {
     backgroundColor: '#25D366',
     width: 36,
@@ -1795,43 +1795,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     opacity: 0.8,
     marginTop: 2,
-  },
-  whatsappCallButtonBottomRight: {
-    position: 'absolute',
-    bottom: 20,
-    right: 20,
-    backgroundColor: '#25D366',
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#25D366',
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
-    zIndex: 1000,
-  },
-  whatsappCallButtonWrapper: {
-    position: 'absolute',
-    bottom: 20,
-    right: 20,
-    zIndex: 1000,
-  },
-  whatsappCallGlow: {
-    position: 'absolute',
-    bottom: -4,
-    right: -4,
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(37, 211, 102, 0.3)',
-    shadowColor: '#25D366',
-    shadowOpacity: 0.6,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
-    zIndex: -1,
   },
   leaveGameBtn: {
     backgroundColor: 'rgba(220,38,38,0.9)',
@@ -1911,5 +1874,46 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  leaveGameButtonWrapper: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    width: 64,
+    height: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  leaveGameGlow: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(220, 38, 38, 0.3)',
+    shadowColor: '#dc2626',
+    shadowOpacity: 0.6,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 0 },
+    zIndex: 0,
+  },
+  leaveGameButtonBottomLeft: {
+    position: 'absolute',
+    left: 8,
+    top: 8,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#dc2626',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#dc2626',
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    zIndex: 1,
   },
 });

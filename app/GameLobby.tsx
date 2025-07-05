@@ -1,48 +1,30 @@
 import React, { useEffect, useState } from 'react';
 import { View, TouchableOpacity, StyleSheet, Dimensions, Animated as LegacyAnimated, Modal, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import ThemedText from './ThemedText';
+import ThemedText from '@/app/components/ThemedText';
 import { db } from '@/config/firebase';
 import { collection, addDoc, onSnapshot, query, where, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router } from 'expo-router';
+import { router, useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { getPlayer } from '@/services/playersService';
 
 const { width } = Dimensions.get('window');
 
-export interface GameLobbyProps {
-  onGameStarted: (gameId: string) => void;
-  onGameJoined: (gameId: string) => void;
-  onCancelGame?: () => void;
-  currentGameId?: string | null;
-  firebaseGameData?: any;
-  isPlayer1?: boolean | null;
-  gameType?: string;
-}
+// This file is now a page. All game initialization logic will be moved here from crazy8.tsx.
 
-export default function GameLobby({
-  onGameStarted,
-  onGameJoined,
-  onCancelGame,
-  currentGameId,
-  firebaseGameData,
-  isPlayer1,
-  gameType
-}: GameLobbyProps) {
+export default function GameLobby() {
   const { user } = useAuth();
+  const router = useRouter();
+  const { gameType } = useLocalSearchParams();
+
+  // --- Game initialization state ---
+  const [currentGameId, setCurrentGameId] = useState<string | null>(null);
+  const [firebaseGameData, setFirebaseGameData] = useState<any>(null);
+  const [isPlayer1, setIsPlayer1] = useState<boolean | null>(null);
+  const [waitingGames, setWaitingGames] = useState<any[]>([]);
   const [localUsername, setLocalUsername] = useState<string>('');
   const [firebaseUsername, setFirebaseUsername] = useState<string>('');
-  
-  // Debug log for player role and game data
-  console.log('GameLobby: isPlayer1', isPlayer1, 'user:', user, 'firebaseGameData:', firebaseGameData);
-  
-  // Log username for debugging
-  console.log('GameLobby - Local username from AsyncStorage:', localUsername);
-  console.log('GameLobby - User UID:', user?.uid);
-  console.log('GameLobby - Firebase username:', firebaseUsername);
-  
-  const [waitingGames, setWaitingGames] = useState<any[]>([]);
   const [showGameCancelledPopup, setShowGameCancelledPopup] = useState(false);
   const [cancelledGameInfo, setCancelledGameInfo] = useState<{cancelledBy: string, reason: string} | null>(null);
   
@@ -50,6 +32,9 @@ export default function GameLobby({
   const fadeAnim = React.useRef(new LegacyAnimated.Value(0)).current;
   const emojiScale = React.useRef(new LegacyAnimated.Value(0.8)).current;
   const [btnScale] = useState(new LegacyAnimated.Value(1));
+  
+  // Ref to track when we just set currentGameId to prevent race condition
+  const justSetGameId = React.useRef(false);
 
   useEffect(() => {
     // Start animations
@@ -110,12 +95,70 @@ export default function GameLobby({
     return () => unsub();
   }, []);
 
+  // Listen for current game updates
+  useEffect(() => {
+    console.log('👂 Game listener - Setting up listener for currentGameId:', currentGameId);
+    
+    if (!currentGameId) {
+      console.log('👂 Game listener - No currentGameId, returning');
+      return;
+    }
+    
+    const gameDoc = doc(db, 'games', currentGameId);
+    const unsub = onSnapshot(gameDoc, (docSnapshot) => {
+      console.log('👂 Game listener - Document snapshot received:', {
+        exists: docSnapshot.exists(),
+        id: docSnapshot.id,
+        data: docSnapshot.exists() ? docSnapshot.data() : null
+      });
+      
+      if (!docSnapshot.exists()) {
+        console.log('🚨 Game listener - Document does not exist, setting firebaseGameData to null');
+        setFirebaseGameData(null);
+        return;
+      }
+      
+      const gameData = docSnapshot.data();
+      console.log('✅ Game listener - Setting firebaseGameData:', gameData);
+      setFirebaseGameData(gameData);
+    });
+    
+    console.log('👂 Game listener - Listener set up, returning cleanup function');
+    return () => {
+      console.log('👂 Game listener - Cleaning up listener');
+      unsub();
+    };
+  }, [currentGameId]);
+
+  // Determine if current user is player1
+  useEffect(() => {
+    if (!user?.uid || !firebaseGameData?.players?.player1?.uid) {
+      setIsPlayer1(null);
+      return;
+    }
+    setIsPlayer1(user.uid === firebaseGameData.players.player1.uid);
+  }, [user?.uid, firebaseGameData]);
+
   // Listen for game cancellation/deletion
   useEffect(() => {
-    if (!currentGameId) return;
+    console.log('🔍 Game cancellation detection - currentGameId:', currentGameId);
+    console.log('🔍 Game cancellation detection - firebaseGameData:', firebaseGameData);
+    console.log('🔍 Game cancellation detection - justSetGameId:', justSetGameId.current);
+    
+    if (!currentGameId) {
+      console.log('🔍 Game cancellation detection - No currentGameId, returning');
+      return;
+    }
+
+    // Skip detection if we just set the game ID (race condition prevention)
+    if (justSetGameId.current) {
+      console.log('🔍 Game cancellation detection - Just set game ID, skipping detection');
+      return;
+    }
 
     // If firebaseGameData is null but we have a currentGameId, the game was likely deleted
     if (!firebaseGameData && currentGameId) {
+      console.log('🚨 Game cancellation detection - Game was deleted! Showing modal');
       setCancelledGameInfo({
         cancelledBy: 'Opponent',
         reason: 'Game was deleted'
@@ -124,55 +167,94 @@ export default function GameLobby({
       return;
     }
 
-    if (!firebaseGameData) return;
+    if (!firebaseGameData) {
+      console.log('🔍 Game cancellation detection - No firebaseGameData, returning');
+      return;
+    }
 
     // Check if game was deleted or cancelled
     if (firebaseGameData.status === 'cancelled' || firebaseGameData.status === 'deleted') {
+      console.log('🚨 Game cancellation detection - Game status is cancelled/deleted:', firebaseGameData.status);
       const cancelledBy = firebaseGameData.cancelledBy || 'Opponent';
       const reason = firebaseGameData.cancellationReason || 'Game was cancelled';
+      
+      console.log('🚨 Game cancellation detection - Showing modal with:', { cancelledBy, reason });
       
       setCancelledGameInfo({
         cancelledBy,
         reason
       });
       setShowGameCancelledPopup(true);
+    } else {
+      console.log('🔍 Game cancellation detection - Game status is normal:', firebaseGameData.status);
     }
   }, [firebaseGameData, currentGameId]);
+
+  // Redirect to /crazy8 when game status is 'started' and currentGameId is set
+  useEffect(() => {
+    if (firebaseGameData?.status === 'started' && currentGameId) {
+      router.push(`/crazy8?gameId=${currentGameId}`);
+    }
+  }, [firebaseGameData?.status, currentGameId]);
 
   // Handle popup dismissal
   const handlePopupDismiss = () => {
     setShowGameCancelledPopup(false);
     setCancelledGameInfo(null);
-    onCancelGame?.();
+    handleCancelGame();
     router.push('/');
   };
 
   // Start new game
   async function handleStartNewGame() {
+    if (!firebaseUsername) {
+      Alert.alert(
+        "Username Required",
+        "You must set a username in your profile before you can play."
+      );
+      return;
+    }
     try {
-      console.log('handleStartNewGame - username being used:', localUsername);
-      console.log('handleStartNewGame - user?.uid:', user?.uid);
+      console.log('🎯 handleStartNewGame - Starting new game creation');
+      console.log('👤 handleStartNewGame - firebaseUsername:', firebaseUsername);
+      console.log('👤 handleStartNewGame - user?.uid:', user?.uid);
       
-      // Delete only active games (not completed) where the current user is a player
+      // Delete only games where the current user is player1 (host) and game is waiting/pending
       const gamesQuery = query(collection(db, 'games'));
       const gamesSnapshot = await getDocs(gamesQuery);
       
-      const deletePromises = gamesSnapshot.docs
-        .filter(doc => {
-          const gameData = doc.data();
-          const player1Name = gameData.players?.player1?.name;
-          const player2Name = gameData.players?.player2?.name;
-          const isPlayerInGame = player1Name === localUsername || player2Name === localUsername;
-          const isActiveGame = gameData.status !== 'finished';
-          return isPlayerInGame && isActiveGame;
-        })
-        .map(doc => deleteDoc(doc.ref));
+      console.log('📊 handleStartNewGame - Total games found:', gamesSnapshot.docs.length);
+      
+      const gamesToDelete = gamesSnapshot.docs.filter(doc => {
+        const gameData = doc.data();
+        const player1Name = gameData.players?.player1?.name;
+        const isPlayer1 = player1Name === firebaseUsername;
+        const isWaitingOrPending = gameData.status === 'waiting' || gameData.status === 'pending_acceptance';
+        
+        console.log('🔍 handleStartNewGame - Checking game:', {
+          gameId: doc.id,
+          player1Name,
+          gameStatus: gameData.status,
+          isPlayer1,
+          isWaitingOrPending,
+          willDelete: isPlayer1 && isWaitingOrPending
+        });
+        
+        return isPlayer1 && isWaitingOrPending;
+      });
+      
+      console.log('🗑️ handleStartNewGame - Games to delete:', gamesToDelete.length);
+      
+      const deletePromises = gamesToDelete.map(doc => {
+        console.log('🗑️ handleStartNewGame - Deleting game:', doc.id);
+        return deleteDoc(doc.ref);
+      });
       
       await Promise.all(deletePromises);
+      console.log('✅ handleStartNewGame - Finished deleting games');
       
-      // Use Firebase username first, then local username, then fallback
-      const playerName = firebaseUsername || localUsername || 'Player';
-      console.log('handleStartNewGame - Final player name being used:', playerName);
+      const playerName = firebaseUsername;
+      console.log('🎯 handleStartNewGame - Final player name being used:', playerName);
       
       const docRef = await addDoc(collection(db, 'games'), {
         status: 'waiting',
@@ -187,22 +269,36 @@ export default function GameLobby({
           },
         },
       });
-      onGameStarted(docRef.id);
+      
+      console.log('✅ handleStartNewGame - New game created with ID:', docRef.id);
+      setCurrentGameId(docRef.id);
+      
+      // Set flag to prevent race condition in cancellation detection
+      justSetGameId.current = true;
+      setTimeout(() => {
+        justSetGameId.current = false;
+      }, 2000); // 2 second grace period
     } catch (err) {
-      console.error('Error starting new game:', err);
+      console.error('❌ handleStartNewGame - Error starting new game:', err);
     }
   }
 
   // Join game
   async function handleJoinGame(gameId: string) {
+    if (!firebaseUsername) {
+      Alert.alert(
+        "Username Required",
+        "You must set a username in your profile before you can play."
+      );
+      return;
+    }
     try {
       const gameDocRef = doc(db, 'games', gameId);
       // Only set player2 if not already set
       const gameSnap = await getDoc(gameDocRef);
       const gameData = gameSnap.exists() ? gameSnap.data() : null;
       if (gameData && (!gameData.players.player2 || !gameData.players.player2.name)) {
-        // Use Firebase username first, then local username, then fallback
-        const playerName = firebaseUsername || localUsername || 'Player';
+        const playerName = firebaseUsername;
         console.log('handleJoinGame - Final player name being used:', playerName);
         
         await updateDoc(gameDocRef, {
@@ -216,7 +312,13 @@ export default function GameLobby({
       } else {
         await updateDoc(gameDocRef, { status: 'pending_acceptance' });
       }
-      onGameJoined(gameId);
+      setCurrentGameId(gameId);
+      
+      // Set flag to prevent race condition in cancellation detection
+      justSetGameId.current = true;
+      setTimeout(() => {
+        justSetGameId.current = false;
+      }, 2000); // 2 second grace period
     } catch (err) {
       console.error('Error joining game:', err);
     }
@@ -236,42 +338,9 @@ export default function GameLobby({
   }
 
   // Cancel game
-  async function handleCancelGame() {
-    if (currentGameId && firebaseGameData) {
-      try {
-        // If player 2 is leaving during pending_acceptance, just remove player2 and set status to 'waiting'
-        if (!isPlayer1 && firebaseGameData.status === 'pending_acceptance') {
-          const gameDocRef = doc(db, 'games', currentGameId);
-          await updateDoc(gameDocRef, {
-            status: 'waiting',
-            'players.player2': null,
-          });
-        } else {
-          // If player 1 is cancelling, set status to cancelled instead of deleting immediately
-          // This allows the opponent to see the cancellation popup
-          const gameDocRef = doc(db, 'games', currentGameId);
-          await updateDoc(gameDocRef, {
-            status: 'cancelled',
-            cancelledBy: localUsername || 'Host',
-            cancellationReason: 'Game was cancelled by the host',
-            cancelledAt: serverTimestamp(),
-          });
-          
-          // Delete the game after a short delay to allow popup to show
-          setTimeout(async () => {
-            try {
-              await deleteDoc(gameDocRef);
-            } catch (err) {
-              console.error('Error deleting cancelled game:', err);
-            }
-          }, 3000); // 3 second delay
-        }
-      } catch (err) {
-        console.error('Error updating or deleting game:', err);
-      }
-    }
-    onCancelGame?.();
-    router.push('/');
+  function handleCancelGame() {
+    setCurrentGameId(null);
+    setFirebaseGameData(null);
   }
 
   const onBtnPressIn = () => {
@@ -476,7 +545,7 @@ export default function GameLobby({
             </View>
             <View style={styles.modalBody}>
               <ThemedText style={styles.modalMessage}>
-                {cancelledGameInfo?.cancelledBy || 'Opponent'} cancelled the game.
+               cancelled the game.
               </ThemedText>
               <ThemedText style={styles.modalSubMessage}>
                 {cancelledGameInfo?.reason || 'The game has been cancelled.'}

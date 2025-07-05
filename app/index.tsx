@@ -100,7 +100,7 @@ export default function IndexScreen() {
   }, []);
 
   const handleCrazy8Press = () => {
-    router.push('/crazy8');
+    router.push('/GameLobby?gameType=crazy8');
   };
 
   const handleLogout = async () => {
