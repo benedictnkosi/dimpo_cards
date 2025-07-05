@@ -1,21 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, ScrollView, Animated, Easing, Image } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ThemedView } from '@/components/ThemedView';
 import { ThemedText } from '@/components/ThemedText';
-import { Header } from '@/components/Header';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { useUsername } from '@/hooks/useUsername';
 import { getPlayer } from '@/services/playersService';
+import { deleteGamesWherePlayer1 } from '@/services/gamesService';
 
 export default function IndexScreen() {
   const { colors, isDark } = useTheme();
   const { signOut, user } = useAuth();
   const insets = useSafeAreaInsets();
-  const { username, isLoading: isUsernameLoading } = useUsername();
   const [cardAnim] = useState(new Animated.Value(0));
   const [welcomeAnim] = useState(new Animated.Value(0));
   const [playerName, setPlayerName] = useState<string>('');
@@ -27,17 +25,62 @@ export default function IndexScreen() {
         setIsPlayerLoading(true);
         try {
           const player = await getPlayer(user.uid);
-          // Use local username first, then fallback to Firestore data
-          setPlayerName(username || player?.userName || player?.displayName || 'Player');
+          console.log('Firebase player data:', player);
+          console.log('Player username from Firebase:', player?.userName);
+          console.log('Player displayName from Firebase:', player?.displayName);
+          // Use Firestore data for player name
+          setPlayerName(player?.userName || player?.displayName || 'Player');
         } catch (e) {
-          setPlayerName(username || 'Player');
+          console.error('Error fetching player from Firebase:', e);
+          setPlayerName('Player');
         } finally {
           setIsPlayerLoading(false);
         }
       }
     };
     fetchPlayerName();
-  }, [user?.uid, username]);
+  }, [user?.uid]);
+
+  // Delete games where user is player1 when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      const deletePlayer1Games = async () => {
+        console.log('🔄 Starting deletePlayer1Games function');
+        console.log('👤 Current playerName:', playerName);
+        console.log('📊 Player loading state:', { isLoading: isPlayerLoading, playerName });
+        
+        // Wait for player name to finish loading before proceeding
+        if (isPlayerLoading) {
+          console.log('⏳ Player name still loading, waiting...');
+          return;
+        }
+        
+        if (playerName && playerName !== 'Player') {
+          console.log('✅ Player name exists, proceeding with game deletion');
+          try {
+            console.log('🗑️ Calling deleteGamesWherePlayer1 with playerName:', playerName);
+            const result = await deleteGamesWherePlayer1(playerName);
+            console.log('✅ Successfully deleted games where user is player1. Result:', result);
+          } catch (error) {
+            console.error('❌ Error deleting games where user is player1:', error);
+            console.error('🔍 Error details:', {
+              message: error instanceof Error ? error.message : 'Unknown error',
+              stack: error instanceof Error ? error.stack : undefined,
+              playerName: playerName
+            });
+          }
+        } else {
+          console.log('⚠️ No valid player name available, skipping game deletion');
+          console.log('💡 This is normal if user hasn\'t set a player name yet');
+        }
+        
+        console.log('🏁 Completed deletePlayer1Games function');
+      };
+      
+      console.log('🎯 Screen focused, triggering deletePlayer1Games');
+      deletePlayer1Games();
+    }, [playerName, isPlayerLoading])
+  );
 
   useEffect(() => {
     Animated.timing(cardAnim, {
@@ -68,10 +111,10 @@ export default function IndexScreen() {
     }
   };
 
-  if (isUsernameLoading) {
+  if (isPlayerLoading) {
     return (
       <ThemedView style={styles.container}>
-        <Header />
+        
         <View style={styles.loadingContainer}>
           <ThemedText style={styles.loadingText}>Loading...</ThemedText>
         </View>
@@ -93,23 +136,13 @@ export default function IndexScreen() {
             <ThemedText style={styles.appName}>Dimpo Plays Cards <ThemedText style={{ fontSize: 20 }}>🤡</ThemedText></ThemedText>
             <ThemedText style={styles.tagline}>Play classic South African card games</ThemedText>
           </View>
-          <View style={styles.headerActions}>
-            <TouchableOpacity
-              style={styles.logoutButton}
-              onPress={handleLogout}
-              activeOpacity={0.7}
-            >
-              <ThemedText style={styles.logoutText}>Logout</ThemedText>
-            </TouchableOpacity>
+          <View style={styles.avatarContainer}>
             <View style={styles.avatarCircle}>
               <Image
                 source={require('@/assets/images/avatars/1.png')}
-                style={{ width: 44, height: 44, borderRadius: 22 }}
+                style={styles.avatarImage}
                 resizeMode="cover"
               />
-              <ThemedText style={{ fontSize: 13, marginTop: 4, textAlign: 'center', color: '#232526' }}>
-                {isPlayerLoading ? '...' : playerName}
-              </ThemedText>
             </View>
           </View>
         </View>
@@ -193,6 +226,19 @@ export default function IndexScreen() {
           </View>
         </Animated.View>
 
+        {/* Dev Buttons at Bottom */}
+        <View style={styles.bottomLogoutContainer}>
+          <TouchableOpacity
+            style={styles.bottomLogoutButton}
+            onPress={handleLogout}
+            activeOpacity={0.7}
+          >
+            <ThemedText style={styles.bottomLogoutText}>Logout</ThemedText>
+          </TouchableOpacity>
+          
+
+        </View>
+
       </ScrollView>
     </ThemedView>
   );
@@ -217,7 +263,7 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: 24,
     paddingBottom: 8,
   },
@@ -233,18 +279,37 @@ const styles = StyleSheet.create({
     opacity: 0.85,
     marginBottom: 2,
   },
+  avatarContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
   avatarCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: '#fff',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOpacity: 0.10,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 6,
+    borderWidth: 2,
+    borderColor: '#eee',
+  },
+  avatarImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  avatarName: {
+    fontSize: 14,
+    marginTop: 6,
+    textAlign: 'center',
+    color: '#232526',
+    fontWeight: '600',
   },
   loadingContainer: {
     flex: 1,
@@ -376,6 +441,44 @@ const styles = StyleSheet.create({
   },
   logoutText: {
     fontSize: 14,
+    fontWeight: '600',
+    color: '#232526',
+  },
+  bottomLogoutContainer: {
+    alignItems: 'center',
+    marginTop: 32,
+    marginBottom: 20,
+  },
+  bottomLogoutButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 4,
+  },
+  bottomLogoutText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#232526',
+  },
+  devButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 193, 7, 0.9)',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 4,
+    marginTop: 12,
+  },
+  devButtonText: {
+    fontSize: 16,
     fontWeight: '600',
     color: '#232526',
   },

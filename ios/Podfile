@@ -16,7 +16,7 @@ prepare_react_native_project!
 use_modular_headers!
 use_frameworks! :linkage => :static
 
-target 'DimpoReads' do
+target 'DimpoPlaysCards' do
   use_expo_modules!
 
   if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'

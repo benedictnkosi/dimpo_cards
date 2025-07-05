@@ -2,7 +2,6 @@ import { HOST_URL } from '@/config/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { analytics } from '@/services/analytics';
-import { completeDeviceRegistration, checkDeviceRegistration, getDeviceId, DeviceRegistrationInfo } from '@/services/deviceRegistration';
 import { addOrUpdatePlayer } from '@/services/playersService';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -11,7 +10,7 @@ import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useEffect, useState } from 'react';
-import { Image, ScrollView, StyleSheet, TouchableOpacity, View, TextInput, Text } from 'react-native';
+import { Image, ScrollView, StyleSheet, TouchableOpacity, View, TextInput, Text, KeyboardAvoidingView, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import { ThemedText } from '../components/ThemedText';
@@ -249,21 +248,6 @@ async function createGuestAccount({ selectedAvatar, signUp, userName, whatsappNu
       // Don't block the guest account creation if Firebase player creation fails
     }
 
-    // Register device with the server
-    try {
-      const deviceRegistrationResult = await completeDeviceRegistration(user.uid);
-      if (deviceRegistrationResult.success) {
-        console.log('[Guest Account] Device registered successfully:', deviceRegistrationResult.deviceId);
-      } else {
-        console.warn('[Guest Account] Device registration failed:', deviceRegistrationResult.message);
-        // Don't block the guest account creation if device registration fails
-      }
-    } catch (deviceError) {
-      console.error('[Guest Account] Error during device registration:', deviceError);
-      // Don't block the guest account creation if device registration fails
-    }
-
-    //console.log('[Guest Account] Guest account creation completed successfully');
     return user;
   } catch (error: unknown) {
     const firebaseError = error as FirebaseError;
@@ -553,106 +537,120 @@ export default function OnboardingScreen() {
       colors={isDark ? ['#1B1464', '#2B2F77'] : ['#F8FAFC', '#E2E8F0']}
       style={[styles.container, { paddingTop: insets.top }]}
     >
-      <View style={styles.content}>
-        <View style={styles.stepContainer}>
-          {renderStep()}
-        </View>
+      <KeyboardAvoidingView 
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1 }}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.content}>
+            <View style={styles.stepContainer}>
+              {renderStep()}
+            </View>
 
-        {(step < 5) && (
-          <View style={styles.buttonContainer} testID="navigation-buttons">
-            {step === 0 ? (
-              <TouchableOpacity
-                style={[styles.button, { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' }]}
-                onPress={() => {
-                  // Track onboarding start
-                  analytics.track('casino_onboarding_started', {
-                    step_number: 0,
-                    step_name: 'welcome',
-                    action: 'start_onboarding'
-                  });
-                  setStep(1);
-                }}
-                testID="start-onboarding-button"
-              >
-                <ThemedText style={[styles.buttonText, { color: isDark ? '#4d5ad3' : '#FFFFFF' }]}> 
-                  Let's Play! 🤡
-                </ThemedText>
-              </TouchableOpacity>
-            ) : step === 4 ? (
-              <>
-                <TouchableOpacity
-                  style={[styles.button, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)' }]}
-                  onPress={() => {
-                    analytics.track('casino_onboarding_navigation', {
-                      action: 'previous_step',
-                      from_step: step,
-                      to_step: step - 1,
-                      step_name: getStepName(step)
-                    });
-                    setStep(step - 1);
-                  }}
-                  testID="previous-step-button"
-                >
-                  <ThemedText style={[styles.buttonText, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>Back</ThemedText>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.button, { backgroundColor: isDark ? '#4F46E5' : '#1E293B' }]}
-                  onPress={handleComplete}
-                  testID="start-playing-button"
-                >
-                  <ThemedText style={[styles.buttonText, { color: '#FFFFFF' }]}>
-                    Start Playing! ♦️
-                  </ThemedText>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                <TouchableOpacity
-                  style={[styles.button, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)' }]}
-                  onPress={() => {
-                    analytics.track('casino_onboarding_navigation', {
-                      action: 'previous_step',
-                      from_step: step,
-                      to_step: step - 1,
-                      step_name: getStepName(step)
-                    });
-                    setStep(step - 1);
-                  }}
-                  testID="previous-step-button"
-                >
-                  <ThemedText style={[styles.buttonText, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>Back</ThemedText>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.button, { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' }]}
-                  onPress={() => {
-                    analytics.track('casino_onboarding_navigation', {
-                      action: 'next_step',
-                      from_step: step,
-                      to_step: step + 1,
-                      step_name: getStepName(step),
-                    });
-                    handleNextStep();
-                  }}
-                  testID="next-step-button"
-                >
-                  <ThemedText style={[
-                    styles.buttonText,
-                    { color: isDark ? '#1E293B' : '#FFFFFF' }
-                  ]}>
-                    Continue! ⭐
-                  </ThemedText>
-                </TouchableOpacity>
-              </>
+            {(step < 5) && (
+              <View style={styles.buttonContainer} testID="navigation-buttons">
+                {step === 0 ? (
+                  <TouchableOpacity
+                    style={[styles.button, { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' }]}
+                    onPress={() => {
+                      // Track onboarding start
+                      analytics.track('casino_onboarding_started', {
+                        step_number: 0,
+                        step_name: 'welcome',
+                        action: 'start_onboarding'
+                      });
+                      setStep(1);
+                    }}
+                    testID="start-onboarding-button"
+                  >
+                    <ThemedText style={[styles.buttonText, { color: isDark ? '#4d5ad3' : '#FFFFFF' }]}> 
+                      Let's Play! 🤡
+                    </ThemedText>
+                  </TouchableOpacity>
+                ) : step === 4 ? (
+                  <>
+                    <TouchableOpacity
+                      style={[styles.button, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)' }]}
+                      onPress={() => {
+                        analytics.track('casino_onboarding_navigation', {
+                          action: 'previous_step',
+                          from_step: step,
+                          to_step: step - 1,
+                          step_name: getStepName(step)
+                        });
+                        setStep(step - 1);
+                      }}
+                      testID="previous-step-button"
+                    >
+                      <ThemedText style={[styles.buttonText, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>Back</ThemedText>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.button, { backgroundColor: isDark ? '#4F46E5' : '#1E293B' }]}
+                      onPress={handleComplete}
+                      testID="start-playing-button"
+                    >
+                      <ThemedText style={[styles.buttonText, { color: '#FFFFFF' }]}> 
+                        Start Playing! ♦️
+                      </ThemedText>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <TouchableOpacity
+                      style={[styles.button, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)' }]}
+                      onPress={() => {
+                        analytics.track('casino_onboarding_navigation', {
+                          action: 'previous_step',
+                          from_step: step,
+                          to_step: step - 1,
+                          step_name: getStepName(step)
+                        });
+                        setStep(step - 1);
+                      }}
+                      testID="previous-step-button"
+                    >
+                      <ThemedText style={[styles.buttonText, { color: isDark ? '#FFFFFF' : '#1E293B' }]}>Back</ThemedText>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.button, { backgroundColor: isDark ? '#FFFFFF' : '#1E293B' }]}
+                      onPress={() => {
+                        analytics.track('casino_onboarding_navigation', {
+                          action: 'next_step',
+                          from_step: step,
+                          to_step: step + 1,
+                          step_name: getStepName(step),
+                        });
+                        handleNextStep();
+                      }}
+                      testID="next-step-button"
+                    >
+                      <ThemedText style={[
+                        styles.buttonText,
+                        { color: isDark ? '#1E293B' : '#FFFFFF' }
+                      ]}>
+                        Continue! ⭐
+                      </ThemedText>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
             )}
           </View>
-        )}
-      </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
+    flex: 1,
+  },
+  keyboardAvoidingView: {
     flex: 1,
   },
   content: {

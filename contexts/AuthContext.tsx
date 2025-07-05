@@ -3,7 +3,6 @@ import * as SecureStore from 'expo-secure-store';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signInAnonymously, signOut as firebaseSignOut, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/config/firebase';
 import { useRouter, useSegments } from 'expo-router';
-import { initializeReadingLevel } from '@/services/database';
 import { addOrUpdatePlayer } from '@/services/playersService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -40,15 +39,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const segments = useSegments();
   const router = useRouter();
 
-  // Initialize reading level if not set
-  const initializeUserReadingLevel = async () => {
-    try {
-      await initializeReadingLevel();
-    } catch (error) {
-      console.error('Error initializing reading level:', error);
-    }
-  };
-
   useEffect(() => {
     let isMounted = true;
 
@@ -59,8 +49,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (storedAuth && !user && isMounted) {
           const { user: storedUser } = JSON.parse(storedAuth);
           setUser(storedUser);
-          // Initialize reading level when user is restored
-          await initializeUserReadingLevel();
         }
       } catch (error) {
         console.error('Error restoring auth from SecureStore:', error);
@@ -82,7 +70,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await SecureStore.setItemAsync('auth', JSON.stringify({ user: userData }));
         setUser(userData);
         // Initialize reading level when user is authenticated
-        await initializeUserReadingLevel();
       } else {
         // Only clear auth if we're sure there's no user
         const storedAuth = await SecureStore.getItemAsync('auth');

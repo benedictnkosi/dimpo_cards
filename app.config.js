@@ -1,15 +1,15 @@
 export default {
-  name: 'Dimpo Reads',
+  name: 'Dimpo Plays Cards',
   slug: 'exam-quiz',
   version: '1',
   orientation: 'portrait',
   icon: './assets/images/icon.png',
-  scheme: 'dimporeads',
+  scheme: 'dimpoplayscards',
   userInterfaceStyle: 'automatic',
   newArchEnabled: false,
   ios: {
     supportsTablet: true,
-    bundleIdentifier: 'com.dimporeads',
+    bundleIdentifier: 'com.dimpoplayscards',
     buildNumber: '1.0.2',
     googleServicesFile: './GoogleService-Info.plist',
     infoPlist: {
@@ -20,7 +20,7 @@ export default {
     "storeKitConfiguration": "./ios/DimpoReads/Configuration.storekit"
   },
   android: {
-    package: 'com.dimporeads',
+    package: 'com.dimpoplayscards',
     "intentFilters": [
       {
         "action": "VIEW",

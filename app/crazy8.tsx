@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Image, View, StyleSheet, TouchableOpacity, Dimensions, Alert, ScrollView, findNodeHandle, InteractionManager, Animated as LegacyAnimated, Button } from 'react-native';
+import { Image, View, StyleSheet, TouchableOpacity, Dimensions, Alert, ScrollView, findNodeHandle, InteractionManager, Animated as LegacyAnimated, Button, Linking, Modal } from 'react-native';
 import ThemedView from './components/ThemedView';
 import ThemedText from './components/ThemedText';
 import { LinearGradient } from 'expo-linear-gradient';
 import CasinoCard from './components/CasinoCard';
+import GameLobby from './components/GameLobby';
 import {
   initGame,
   playCard,
@@ -20,6 +21,9 @@ import { collection, addDoc, onSnapshot, query, where, serverTimestamp, doc, upd
 import { useUsername } from '@/hooks/useUsername';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS } from 'react-native-reanimated';
 import { router } from 'expo-router';
+import { getPlayer } from '@/services/playersService';
+import whatsappIcon from '../assets/images/whatsapp.png';
+import { useAuth } from './contexts/AuthContext';
 
 const { width, height } = Dimensions.get('window');
 
@@ -68,6 +72,7 @@ function shuffle(deck: Card[]): Card[] {
 
 export default function CasinoGameScreen() {
   const { username } = useUsername();
+  const { user } = useAuth();
   const [game, setGame] = useState<GameState>(initGame());
   const [firebaseGameData, setFirebaseGameData] = useState<any>(null);
   const [choosingSuit, setChoosingSuit] = useState(false);
@@ -76,7 +81,6 @@ export default function CasinoGameScreen() {
   const [dealtStock, setDealtStock] = useState<Card[]>([]);
   const [dealtDiscard, setDealtDiscard] = useState<Card[]>([]);
   const [screen, setScreen] = useState<'welcome' | 'game'>('welcome');
-  const [waitingGames, setWaitingGames] = useState<any[]>([]);
   const [currentGameId, setCurrentGameId] = useState<string | null>(null);
   const [playerNames, setPlayerNames] = useState({ south: 'Player 1', north: 'Player 2' });
   const [isPlayer1, setIsPlayer1] = useState<boolean | null>(null);
@@ -111,6 +115,14 @@ export default function CasinoGameScreen() {
 
   const [localTopCard, setLocalTopCard] = useState<Card | null>(null);
   const prevDiscardLength = useRef<number>(0);
+  const [opponentPhoneNumber, setOpponentPhoneNumber] = useState<string | null>(null);
+  const [showGameCancelledPopup, setShowGameCancelledPopup] = useState(false);
+  const [cancelledGameInfo, setCancelledGameInfo] = useState<{cancelledBy: string, reason: string} | null>(null);
+
+  // Log when opponentPhoneNumber changes
+  useEffect(() => {
+    console.log('📱 opponentPhoneNumber state changed:', opponentPhoneNumber);
+  }, [opponentPhoneNumber]);
 
   // 1. Add a ref array for north hand cards
   const northHandCardRefs = useRef<(View | null)[]>([]);
@@ -138,14 +150,7 @@ export default function CasinoGameScreen() {
     return () => { isMounted.current = false; };
   }, []);
 
-  // Listen for waiting games
-  useEffect(() => {
-    const q = query(collection(db, 'games'), where('status', '==', 'waiting'));
-    const unsub = onSnapshot(q, (snap) => {
-      setWaitingGames(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
-    return () => unsub();
-  }, []);
+
 
   // Listen for current game updates
   useEffect(() => {
@@ -153,9 +158,33 @@ export default function CasinoGameScreen() {
     
     const gameDoc = doc(db, 'games', currentGameId);
     const unsub = onSnapshot(gameDoc, (docSnapshot) => {
+      if (!docSnapshot.exists()) {
+        // Game was deleted
+        setCancelledGameInfo({
+          cancelledBy: 'Opponent',
+          reason: 'Game was deleted'
+        });
+        setShowGameCancelledPopup(true);
+        return;
+      }
+      
       if (docSnapshot.exists()) {
         const gameData = docSnapshot.data();
         setFirebaseGameData(gameData);
+        
+        // Check for game cancellation
+        if (gameData.status === 'cancelled' || gameData.status === 'deleted') {
+          const cancelledBy = gameData.cancelledBy || 'Opponent';
+          const reason = gameData.cancellationReason || 'Game was cancelled';
+          
+          setCancelledGameInfo({
+            cancelledBy,
+            reason
+          });
+          setShowGameCancelledPopup(true);
+          return;
+        }
+        
         if (gameData && gameData.players) {
           // Set syncing flag to prevent auto-sync during Firebase update
           isSyncingToFirebase.current = true;
@@ -239,6 +268,27 @@ export default function CasinoGameScreen() {
           setTimeout(() => {
             isSyncingToFirebase.current = false;
           }, 200);
+          
+          // Fetch opponent's phone number
+          console.log('🔄 Calling fetchOpponentPhoneNumber from useEffect');
+          fetchOpponentPhoneNumber();
+          
+          // Also try to fetch immediately if we have the data
+          if (gameData.players) {
+            const opponentPlayerKey = isP1 ? 'player2' : 'player1';
+            const opponentData = gameData.players[opponentPlayerKey];
+            if (opponentData?.uid) {
+              console.log('🚀 Immediate fetch attempt for UID:', opponentData.uid);
+              getPlayer(opponentData.uid).then(opponentPlayer => {
+                if (opponentPlayer?.whatsappNumber) {
+                  console.log('✅ Immediate fetch successful:', opponentPlayer.whatsappNumber);
+                  setOpponentPhoneNumber(opponentPlayer.whatsappNumber);
+                }
+              }).catch(error => {
+                console.error('❌ Immediate fetch failed:', error);
+              });
+            }
+          }
         }
       }
     });
@@ -265,64 +315,175 @@ export default function CasinoGameScreen() {
   useEffect(() => {
   }, [game.discard]);
 
-  // Start new game
-  async function handleStartNewGame() {
-    try {
-      // Delete only active games (not completed) where the current user is a player
-      const gamesQuery = query(collection(db, 'games'));
-      const gamesSnapshot = await getDocs(gamesQuery);
-      
-      const deletePromises = gamesSnapshot.docs
-        .filter(doc => {
-          const gameData = doc.data();
-          const player1Name = gameData.players?.player1?.name;
-          const player2Name = gameData.players?.player2?.name;
-          const isPlayerInGame = player1Name === username || player2Name === username;
-          const isActiveGame = gameData.status !== 'finished';
-          return isPlayerInGame && isActiveGame;
-        })
-        .map(doc => deleteDoc(doc.ref));
-      
-      await Promise.all(deletePromises);
-      
-      const docRef = await addDoc(collection(db, 'games'), {
-        status: 'waiting',
-        createdAt: serverTimestamp(),
-        gameName: username || 'Player',
-        players: {
-          player1: {
-            name: username || 'Player',
-            hand: [],
+  // Handle game started from lobby
+  function handleGameStarted(gameId: string) {
+    setCurrentGameId(gameId);
+    setScreen('game');
+  }
+
+  // Handle game joined from lobby
+  function handleGameJoined(gameId: string) {
+    setCurrentGameId(gameId);
+    setScreen('game');
+  }
+
+  // Handle cancel game from lobby
+  function handleCancelGame() {
+    setCurrentGameId(null);
+    setScreen('welcome');
+  }
+
+  // Handle popup dismissal
+  const handlePopupDismiss = () => {
+    setShowGameCancelledPopup(false);
+    setCancelledGameInfo(null);
+    setCurrentGameId(null);
+    setScreen('welcome');
+    router.push('/');
+  };
+
+  // Handle leave game (remove player from game)
+  async function handleLeaveGame() {
+    if (!currentGameId || isPlayer1 === null) return;
+    
+    const action = isPlayer1 ? 'cancel' : 'leave';
+    const title = isPlayer1 ? 'Cancel Game' : 'Leave Game';
+    const message = isPlayer1 
+      ? 'Are you sure you want to cancel this game? This will delete the game entirely.'
+      : 'Are you sure you want to leave this game?';
+    
+    Alert.alert(
+      title,
+      message,
+      [
+        {
+          text: 'No',
+          style: 'cancel',
+        },
+        {
+          text: 'Yes',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const gameDocRef = doc(db, 'games', currentGameId);
+              
+              if (isPlayer1) {
+                // If player 1 is leaving, set status to cancelled instead of deleting immediately
+                // This allows the opponent to see the cancellation popup
+                await updateDoc(gameDocRef, {
+                  status: 'cancelled',
+                  cancelledBy: username || 'Host',
+                  cancellationReason: 'Game was cancelled by the host',
+                  cancelledAt: serverTimestamp(),
+                });
+                
+                // Delete the game after a short delay to allow popup to show
+                setTimeout(async () => {
+                  try {
+                    await deleteDoc(gameDocRef);
+                  } catch (err) {
+                    console.error('Error deleting cancelled game:', err);
+                  }
+                }, 3000); // 3 second delay
+              } else {
+                // If player 2 is leaving, remove player2 and set status back to 'waiting'
+                await updateDoc(gameDocRef, {
+                  status: 'waiting',
+                  'players.player2': null,
+                });
+              }
+              
+              // Reset local state
+              setCurrentGameId(null);
+              router.push('/');
+            } catch (err) {
+              console.error('Error leaving game:', err);
+              Alert.alert('Error', 'Failed to leave the game. Please try again.');
+            }
           },
         },
-      });
-      setCurrentGameId(docRef.id);
-      setScreen('game');
-    } catch (err) {
+      ]
+    );
+  }
+
+  // Fetch opponent's phone number from players collection
+  async function fetchOpponentPhoneNumber() {
+    console.log('🔍 fetchOpponentPhoneNumber called');
+    console.log('firebaseGameData?.players:', firebaseGameData?.players);
+    console.log('isPlayer1:', isPlayer1);
+    
+    if (!firebaseGameData?.players || isPlayer1 === null) {
+      console.log('❌ Early return: missing game data or player1 status');
+      return;
+    }
+    
+    try {
+      const opponentPlayerKey = isPlayer1 ? 'player2' : 'player1';
+      const opponentData = firebaseGameData.players[opponentPlayerKey];
+      
+      console.log('opponentPlayerKey:', opponentPlayerKey);
+      console.log('opponentData:', opponentData);
+      
+      if (opponentData?.uid) {
+        console.log('🔍 Fetching player data for UID:', opponentData.uid);
+        const opponentPlayer = await getPlayer(opponentData.uid);
+        console.log('opponentPlayer:', opponentPlayer);
+        
+        if (opponentPlayer?.whatsappNumber) {
+          console.log('✅ Setting opponent phone number:', opponentPlayer.whatsappNumber);
+          setOpponentPhoneNumber(opponentPlayer.whatsappNumber);
+        } else {
+          console.log('❌ No WhatsApp number found for opponent');
+        }
+      } else {
+        console.log('❌ No opponent UID found');
+      }
+    } catch (error) {
+      console.error('Error fetching opponent phone number:', error);
     }
   }
 
-  // Join game
-  async function handleJoinGame(gameId: string) {
+  // Manual test function for debugging
+  async function testFetchPhoneNumber() {
+    console.log('🧪 Manual test: fetchOpponentPhoneNumber');
+    await fetchOpponentPhoneNumber();
+  }
+
+  // Handle WhatsApp call
+  async function handleWhatsAppCall() {
+    if (!opponentPhoneNumber) {
+      Alert.alert('No Phone Number', 'Opponent has not shared their phone number.');
+      return;
+    }
+    
     try {
-      const gameDocRef = doc(db, 'games', gameId);
-      // Only set player2 if not already set
-      const gameSnap = await getDoc(gameDocRef);
-      const gameData = gameSnap.exists() ? gameSnap.data() : null;
-      if (gameData && (!gameData.players.player2 || !gameData.players.player2.name)) {
-        await updateDoc(gameDocRef, {
-          status: 'pending_acceptance',
-          [`players.player2`]: {
-            name: username || 'Player',
-            hand: [],
-          },
-        });
-      } else {
-        await updateDoc(gameDocRef, { status: 'pending_acceptance' });
+      // Format phone number for WhatsApp
+      let formattedNumber = opponentPhoneNumber.replace(/[^\d+]/g, '');
+      
+      // Handle South African numbers: if starts with 0, remove it and add +27
+      if (formattedNumber.startsWith('0')) {
+        formattedNumber = '+27' + formattedNumber.substring(1);
+        console.log('🇿🇦 Converting SA number:', opponentPhoneNumber, '→', formattedNumber);
       }
-      setCurrentGameId(gameId);
-      setScreen('game');
-    } catch (err) {
+      
+      console.log('📞 Opening WhatsApp with number:', formattedNumber);
+      
+      // Try to open WhatsApp directly
+      const whatsappUrl = `whatsapp://send?phone=${formattedNumber}`;
+      
+      const supported = await Linking.canOpenURL(whatsappUrl);
+      if (supported) {
+        console.log('✅ Opening WhatsApp app');
+        await Linking.openURL(whatsappUrl);
+      } else {
+        // Fallback to web WhatsApp
+        console.log('🌐 Opening web WhatsApp');
+        const webWhatsappUrl = `https://wa.me/${formattedNumber}`;
+        await Linking.openURL(webWhatsappUrl);
+      }
+    } catch (error) {
+      console.error('Error opening WhatsApp:', error);
+      Alert.alert('Error', 'Could not open WhatsApp. Please try again.');
     }
   }
 
@@ -334,16 +495,27 @@ export default function CasinoGameScreen() {
     try {
       const gameDocRef = doc(db, 'games', currentGameId);
       
+      // Get current game data to preserve UIDs
+      const currentGameDoc = await getDoc(gameDocRef);
+      const currentGameData = currentGameDoc.exists() ? currentGameDoc.data() : null;
+      
+      console.log('🔄 updateGameInFirebase - preserving UIDs');
+      console.log('Current game data players:', currentGameData?.players);
+      
       // Prepare the update data
       const updateData: any = {
         players: {
           player1: {
             name: isPlayer1 ? (username || 'Player') : playerNames.north,
             hand: isPlayer1 ? gameState.hands.south : gameState.hands.north,
+            // Preserve existing UID if it exists
+            ...(currentGameData?.players?.player1?.uid && { uid: currentGameData.players.player1.uid }),
           },
           player2: {
             name: isPlayer1 ? playerNames.north : (username || 'Player'),
             hand: isPlayer1 ? gameState.hands.north : gameState.hands.south,
+            // Preserve existing UID if it exists
+            ...(currentGameData?.players?.player2?.uid && { uid: currentGameData.players.player2.uid }),
           },
         },
         pile: gameState.stock,
@@ -354,6 +526,8 @@ export default function CasinoGameScreen() {
         lastUpdated: serverTimestamp(),
       };
       
+      console.log('Updated game data players:', updateData.players);
+      
       // Add lastCardPlayed to the appropriate player object if provided
       if (lastCardPlayed) {
         const playerKey = isPlayer1 ? 'player1' : 'player2';
@@ -362,6 +536,7 @@ export default function CasinoGameScreen() {
       
       await updateDoc(gameDocRef, updateData);
     } catch (err) {
+      console.error('Error updating game in Firebase:', err);
       // Don't throw the error, just log it to prevent crashes
     }
   }
@@ -495,8 +670,8 @@ export default function CasinoGameScreen() {
               }
               animCardX.value = x;
               animCardY.value = y;
-              animCardX.value = withTiming(dx, { duration: 2500 });
-              animCardY.value = withTiming(dy, { duration: 2500 }, (finished) => {
+              animCardX.value = withTiming(dx, { duration: 1000 });
+              animCardY.value = withTiming(dy, { duration: 1000 }, (finished) => {
                 if (finished) runOnJS(onPlayerCardAnimationEnd)(player, idx);
               });
             });
@@ -542,17 +717,7 @@ export default function CasinoGameScreen() {
     animateCenterCardDown();
   }
 
-  // Accept opponent (for player 1)
-  async function handleAcceptOpponent() {
-    if (!currentGameId) return;
-    try {
-      const gameDocRef = doc(db, 'games', currentGameId);
-      await updateDoc(gameDocRef, {
-        status: 'started',
-      });
-    } catch (err) {
-    }
-  }
+
 
   // Handle undoing a play by moving top card from discard pile to player's hand
   async function handleUndoPlay(player: Player) {
@@ -664,35 +829,7 @@ export default function CasinoGameScreen() {
     }
   }, [game.discard]);
 
-  // Move these hooks to the top level, before any conditional or return
-  const fadeAnim = useRef(new LegacyAnimated.Value(0)).current;
-  const emojiScale = useRef(new LegacyAnimated.Value(0.8)).current;
-  const [btnScale] = useState(new LegacyAnimated.Value(1));
-  useEffect(() => {
-    LegacyAnimated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 700,
-      useNativeDriver: true,
-    }).start();
-    LegacyAnimated.spring(emojiScale, {
-      toValue: 1,
-      friction: 3,
-      tension: 80,
-      useNativeDriver: true,
-    }).start();
-  }, []);
-  const onBtnPressIn = () => {
-    LegacyAnimated.spring(btnScale, {
-      toValue: 0.96,
-      useNativeDriver: true,
-    }).start();
-  };
-  const onBtnPressOut = () => {
-    LegacyAnimated.spring(btnScale, {
-      toValue: 1,
-      useNativeDriver: true,
-    }).start();
-  };
+
 
   // Only show the playful welcome screen if:
   // - screen === 'welcome' OR
@@ -700,152 +837,20 @@ export default function CasinoGameScreen() {
   // If firebaseGameData?.status === 'started', show the game table view.
   const showWelcome = (screen === 'welcome') || (firebaseGameData && (firebaseGameData.status === 'waiting' || firebaseGameData.status === 'pending_acceptance'));
   if (showWelcome) {
+    // Determine if the current user is player1 (host)
+    const currentUserUid = user?.uid;
+    const player1Uid = firebaseGameData?.players?.player1?.uid;
+    const isPlayer1 = Boolean(currentUserUid && player1Uid && currentUserUid === player1Uid);
     return (
-      <LinearGradient
-        colors={["#14532d", "#006400", "#228B22"]}
-        start={{ x: 0.1, y: 0.1 }}
-        end={{ x: 0.9, y: 0.9 }}
-        style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}
-      >
-        {/* Playful casino title */}
-        <ThemedText style={styles.casinoTitle}>🎲 Dimpo Crazy 8 🎰</ThemedText>
-        {/* Casino/joker mascot emoji */}
-        <LegacyAnimated.Text
-          style={{
-            fontSize: 72,
-            marginBottom: 10,
-            textAlign: 'center',
-            transform: [{ scale: emojiScale }],
-            shadowColor: '#FFD700',
-            shadowOpacity: 0.5,
-            shadowRadius: 16,
-            shadowOffset: { width: 0, height: 4 },
-          }}
-          accessibilityLabel="Joker emoji"
-        >
-          🃏
-        </LegacyAnimated.Text>
-        {/* Start New Game button (only show if not waiting for opponent) */}
-        {(!firebaseGameData || (firebaseGameData.status !== 'waiting' && firebaseGameData.status !== 'pending_acceptance')) && (
-          <LegacyAnimated.View style={{ transform: [{ scale: btnScale }], width: '100%', alignItems: 'center', marginBottom: 10 }}>
-            <TouchableOpacity
-              style={styles.dealBtnModern}
-              onPress={handleStartNewGame}
-              activeOpacity={0.85}
-              onPressIn={onBtnPressIn}
-              onPressOut={onBtnPressOut}
-            >
-              <ThemedText style={styles.dealBtnTextModern}>Start New Game</ThemedText>
-            </TouchableOpacity>
-          </LegacyAnimated.View>
-        )}
-        {/* Animated waiting message (show if waiting for opponent or pending acceptance) */}
-        {firebaseGameData && (firebaseGameData.status === 'waiting' || firebaseGameData.status === 'pending_acceptance') && (
-          // Host sees accept button if pending_acceptance
-          isPlayer1 && firebaseGameData.status === 'pending_acceptance' && firebaseGameData.players?.player2?.name ? (
-            <View style={styles.acceptContainer}>
-              <ThemedText style={styles.opponentJoinedText}>
-                {firebaseGameData.players.player2.name} wants to join!
-              </ThemedText>
-              <TouchableOpacity style={styles.acceptBtn} onPress={handleAcceptOpponent}>
-                <ThemedText style={styles.acceptBtnText}>Accept Opponent</ThemedText>
-              </TouchableOpacity>
-            </View>
-          ) :
-          // Player 2 sees waiting for host to accept
-          (!isPlayer1 && firebaseGameData.status === 'pending_acceptance') ? (
-            <LegacyAnimated.Text
-              style={[
-                styles.waitingMessagePlayful,
-                {
-                  opacity: fadeAnim,
-                  transform: [{ scale: fadeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.95, 1.08] }) }],
-                },
-              ]}
-            >
-              Waiting for host to accept...
-            </LegacyAnimated.Text>
-          ) :
-          // Default: waiting for opponent to join
-          (
-            <LegacyAnimated.Text
-              style={[
-                styles.waitingMessagePlayful,
-                {
-                  opacity: fadeAnim,
-                  transform: [{ scale: fadeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.95, 1.08] }) }],
-                },
-              ]}
-            >
-              Waiting for opponent to join…
-            </LegacyAnimated.Text>
-          )
-        )}
-        {/* Games waiting for opponents section (only show if not currently waiting for an opponent) */}
-        {(!firebaseGameData || (firebaseGameData.status !== 'waiting' && firebaseGameData.status !== 'pending_acceptance')) && (
-          <View style={styles.waitingGamesSection}>
-            <ThemedText style={styles.waitingTitleModern}>Games waiting for opponents:</ThemedText>
-            {waitingGames.length === 0 && (
-              <View style={styles.noGamesModernRow}>
-                
-                <ThemedText style={styles.noGamesPlayfulText}>No games yet! Be the first to start one!</ThemedText>
-              </View>
-            )}
-            <View style={styles.waitingGamesListModern}>
-              {waitingGames.map(game => {
-                const createdAt = game.createdAt?.toDate ? game.createdAt.toDate() : new Date();
-                const formattedDate = createdAt.toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit'
-                });
-                return (
-                  <TouchableOpacity
-                    key={game.id}
-                    style={styles.waitingGameBtnModern}
-                    onPress={() => handleJoinGame(game.id)}
-                    activeOpacity={0.85}
-                  >
-                    <View style={styles.gameInfoContainerModern}>
-                      <ThemedText style={styles.waitingGameTextModern}>🎲 <ThemedText style={{fontWeight:'bold'}}>{game.gameName || 'Player'}</ThemedText></ThemedText>
-                      <ThemedText style={styles.gameDateTextModern}>{formattedDate}</ThemedText>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-        )}
-        {/* Playful casino elements in corners */}
-        <View style={[styles.cornerEmojiTL, styles.cornerEmojiTop]}><ThemedText style={styles.cornerEmoji}>🪙</ThemedText></View>
-        <View style={[styles.cornerEmojiTR, styles.cornerEmojiTop]}><ThemedText style={styles.cornerEmoji}>🎲</ThemedText></View>
-        <View style={styles.cornerEmojiBL}><ThemedText style={styles.cornerEmoji}>🃏</ThemedText></View>
-        <View style={styles.cornerEmojiBR}><ThemedText style={styles.cornerEmoji}>🪙</ThemedText></View>
-        {/* Cancel Game button */}
-        {(firebaseGameData && (firebaseGameData.status === 'waiting' || firebaseGameData.status === 'pending_acceptance')) && (
-          <TouchableOpacity
-            style={styles.cancelGameBtn}
-            onPress={async () => {
-              if (currentGameId) {
-                try {
-                  await deleteDoc(doc(db, 'games', currentGameId));
-                  
-                } catch (err) {
-                  console.error('Error deleting game:', err);
-                }
-              }
-              setCurrentGameId(null);
-              router.push('/');
-            }}
-            activeOpacity={0.7}
-          >
-            <ThemedText style={styles.cancelGameBtnText}>❌ Cancel Game</ThemedText>
-          </TouchableOpacity>
-        )}
-        {/* Footer */}
-        <View style={styles.footer}><ThemedText style={styles.footerText}>© {new Date().getFullYear()} Dimpo Crazy 8</ThemedText></View>
-      </LinearGradient>
+      <GameLobby
+        onGameStarted={handleGameStarted}
+        onGameJoined={handleGameJoined}
+        onCancelGame={handleCancelGame}
+        currentGameId={currentGameId}
+        firebaseGameData={firebaseGameData}
+        isPlayer1={isPlayer1}
+        gameType="crazy8"
+      />
     );
   }
 
@@ -883,29 +888,26 @@ export default function CasinoGameScreen() {
                   resizeMode="contain"
                 />
               </View>
-              {/* Deal button or waiting message */}
-              {firebaseGameData?.status === 'pending_acceptance' && firebaseGameData?.players?.player2?.name ? (
+              {/* Deal button only for player 1, waiting message for player 2 */}
+              {firebaseGameData?.status === 'started' && firebaseGameData?.players?.player2?.name ? (
                 isPlayer1 ? (
-                  <View style={styles.acceptContainer}>
-                    <ThemedText style={styles.opponentJoinedText}>
-                      {firebaseGameData.players.player2.name} wants to join!
-                    </ThemedText>
-                    <TouchableOpacity style={styles.acceptBtn} onPress={handleAcceptOpponent}>
-                      <ThemedText style={styles.acceptBtnText}>Accept Opponent</ThemedText>
-                    </TouchableOpacity>
-                  </View>
+                  <TouchableOpacity style={styles.dealBtnModernBig} onPress={handleDeal}>
+                    <ThemedText style={styles.dealBtnTextModernBig}>🎲 Deal Cards</ThemedText>
+                  </TouchableOpacity>
                 ) : (
                   <View style={styles.waitingContainer}>
-                    <ThemedText style={styles.waitingMessage}>Waiting for host to accept...</ThemedText>
+                    <ThemedText style={styles.waitingMessage}>Waiting for Player 1 to deal...</ThemedText>
+                    <TouchableOpacity style={styles.leaveGameBtn} onPress={handleLeaveGame}>
+                      <ThemedText style={styles.leaveGameBtnText}>🚪 Leave Game</ThemedText>
+                    </TouchableOpacity>
                   </View>
                 )
-              ) : firebaseGameData?.status === 'started' && firebaseGameData?.players?.player2?.name ? (
-                <TouchableOpacity style={styles.dealBtnModernBig} onPress={handleDeal}>
-                  <ThemedText style={styles.dealBtnTextModernBig}>🎲 Deal Cards</ThemedText>
-                </TouchableOpacity>
               ) : (
                 <View style={styles.waitingContainer}>
                   <ThemedText style={styles.waitingMessage}>Waiting for opponent to join...</ThemedText>
+                  <TouchableOpacity style={styles.leaveGameBtn} onPress={handleLeaveGame}>
+                    <ThemedText style={styles.leaveGameBtnText}>🚪 Cancel Game</ThemedText>
+                  </TouchableOpacity>
                 </View>
               )}
             </View>
@@ -1096,6 +1098,9 @@ export default function CasinoGameScreen() {
                   )}
                   <Image source={player.avatar} style={styles.avatar} />
                   <ThemedText style={styles.nameText}>{playerNames[player.key]}</ThemedText>
+                  
+                  {/* WhatsApp call button removed from here - will be placed at bottom right */}
+                  
                   {/* Opponent's cards below avatar */}
                   {player.key === 'north' && (
                     <>
@@ -1133,7 +1138,56 @@ export default function CasinoGameScreen() {
             </>
           )}
         </LinearGradient>
+        
+        {/* WhatsApp call button - bottom right */}
+        {gamePhase === 'playing' && opponentPhoneNumber && (
+          <View style={styles.whatsappCallButtonWrapper}>
+            <TouchableOpacity
+              style={styles.whatsappCallButtonBottomRight}
+              onPress={handleWhatsAppCall}
+              activeOpacity={0.7}
+            >
+              <Image
+                source={whatsappIcon}
+                style={{ width: 32, height: 32 }}
+                resizeMode="contain"
+              />
+            </TouchableOpacity>
+            <View style={styles.whatsappCallGlow} />
+          </View>
+        )}
       </ThemedView>
+      
+      {/* Game Cancelled Popup */}
+      <Modal
+        visible={showGameCancelledPopup}
+        transparent
+        animationType="fade"
+        onRequestClose={handlePopupDismiss}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>🎲 Game Cancelled</ThemedText>
+            </View>
+            <View style={styles.modalBody}>
+              <ThemedText style={styles.modalMessage}>
+                {cancelledGameInfo?.cancelledBy || 'Opponent'} cancelled the game.
+              </ThemedText>
+              <ThemedText style={styles.modalSubMessage}>
+                {cancelledGameInfo?.reason || 'The game has been cancelled.'}
+              </ThemedText>
+            </View>
+            <TouchableOpacity
+              style={styles.modalButton}
+              onPress={handlePopupDismiss}
+              activeOpacity={0.8}
+            >
+              <ThemedText style={styles.modalButtonText}>OK</ThemedText>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1317,41 +1371,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     textTransform: 'capitalize',
   },
-  welcomeCenter: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: height / 2 - 120,
-  },
-  welcomeTitle: {
-    color: '#222',
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 24,
-  },
-  waitingTitle: {
-    color: '#222',
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 12,
-  },
-  noGamesText: {
-    color: '#444',
-    fontSize: 16,
-    opacity: 1,
-  },
-  waitingGameBtn: {
-    backgroundColor: '#19C37D',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 18,
-    marginTop: 6,
-  },
-  waitingGameText: {
-    color: '#222',
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
+
   drawHintText: {
     color: '#444',
     fontSize: 12,
@@ -1367,55 +1387,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 24,
   },
-  gameInfoContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gameDateText: {
-    color: '#555',
-    fontSize: 12,
-    opacity: 1,
-    marginTop: 2,
-  },
-  waitingContainer: {
-    marginLeft: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  waitingMessage: {
-    color: '#444',
-    fontSize: 18,
-    fontWeight: '500',
-    textAlign: 'center',
-    opacity: 1,
-  },
-  acceptContainer: {
-    marginLeft: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  opponentJoinedText: {
-    color: '#FFD700',
-    fontSize: 24,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 18,
-    textShadowColor: '#222',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 8,
-  },
-  acceptBtn: {
-    backgroundColor: '#22c55e',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 20,
-    elevation: 3,
-  },
-  acceptBtnText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
+
   welcomeFadeIn: {
     flex: 1,
     alignItems: 'center',
@@ -1723,6 +1695,23 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
+  waitingContainer: {
+    marginLeft: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  waitingMessage: {
+    color: '#FFD700',
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    opacity: 1,
+    textShadowColor: '#222',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6,
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
   bigDeckContainer: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -1778,5 +1767,149 @@ const styles = StyleSheet.create({
     textShadowColor: '#FFD700',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 8,
+  },
+  whatsappCallButton: {
+    backgroundColor: '#25D366',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    shadowColor: '#25D366',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  whatsappCallText: {
+    fontSize: 18,
+    color: '#fff',
+  },
+  whatsappCallContainer: {
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  whatsappCallHint: {
+    fontSize: 10,
+    color: '#fff',
+    opacity: 0.8,
+    marginTop: 2,
+  },
+  whatsappCallButtonBottomRight: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    backgroundColor: '#25D366',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#25D366',
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    zIndex: 1000,
+  },
+  whatsappCallButtonWrapper: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    zIndex: 1000,
+  },
+  whatsappCallGlow: {
+    position: 'absolute',
+    bottom: -4,
+    right: -4,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(37, 211, 102, 0.3)',
+    shadowColor: '#25D366',
+    shadowOpacity: 0.6,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 0 },
+    zIndex: -1,
+  },
+  leaveGameBtn: {
+    backgroundColor: 'rgba(220,38,38,0.9)',
+    borderRadius: 20,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    shadowColor: '#dc2626',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+    alignItems: 'center',
+    alignSelf: 'center',
+    marginTop: 16,
+  },
+  leaveGameBtnText: {
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: 'bold',
+    textShadowColor: '#222',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 24,
+    margin: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+    minWidth: 280,
+  },
+  modalHeader: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#dc2626',
+    textAlign: 'center',
+  },
+  modalBody: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  modalMessage: {
+    fontSize: 18,
+    color: '#333',
+    textAlign: 'center',
+    marginBottom: 8,
+    fontWeight: '600',
+  },
+  modalSubMessage: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  modalButton: {
+    backgroundColor: '#19C37D',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  modalButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });
