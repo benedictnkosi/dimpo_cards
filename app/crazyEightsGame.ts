@@ -25,16 +25,16 @@ export function initGame(): GameState {
   let deck = shuffle(cards as Card[]);
   const hands = { north: deck.slice(0, 7), south: deck.slice(7, 14) };
   deck = deck.slice(14);
-  // Start discard pile with a non-8 card
+  // Start discard pile with a non-special card (7, 2, 8, J, A)
   let discard: Card[] = [];
   let top: Card | undefined;
   while (deck.length) {
     top = deck.shift();
-    if (top && top.value !== '8') {
+    if (top && !['7', '2', '8', 'J', 'A'].includes(top.value)) {
       discard = [top];
       break;
     } else if (top) {
-      deck.push(top); // put 8s at bottom
+      deck.push(top); // put special cards at bottom
     }
   }
   return {
@@ -49,40 +49,108 @@ export function initGame(): GameState {
 }
 
 export function canPlay(card: Card, top: Card, currentSuit: string): boolean {
-  return true; // Allow any card to be played
+  console.log('[canPlay] Checking if card can be played:', { card, top, currentSuit });
+  
+  // If no top card (empty discard pile), any card can be played
+  if (!top) {
+    console.log('[canPlay] No top card, allowing play');
+    return true;
+  }
+  
+  // Allow any card to be played (simplified rules for now)
+  console.log('[canPlay] Allowing play (simplified rules)');
+  return true;
 }
 
 export function playCard(state: GameState, player: Player, cardIdx: number, newSuit?: string): GameState {
-  if (state.winner) return state;
+  console.log('[playCard] START - player:', player, 'cardIdx:', cardIdx, 'newSuit:', newSuit);
+  console.log('[playCard] Input state:', {
+    hands: { north: state.hands.north.length, south: state.hands.south.length },
+    discard: state.discard.length,
+    turn: state.turn,
+    currentSuit: state.currentSuit,
+    winner: state.winner,
+    chooseSuit: state.chooseSuit
+  });
+  
+  if (state.winner) {
+    console.log('[playCard] Game already has winner, returning unchanged state');
+    return state;
+  }
+  
   const hand = [...state.hands[player]];
+  console.log('[playCard] Player hand before play:', hand.map(c => `${c.value}${c.suit}`));
+  
   const card = hand[cardIdx];
+  console.log('[playCard] Card to play:', card);
+  
+  if (!card) {
+    console.log('[playCard] No card found at index:', cardIdx, 'hand length:', hand.length);
+    return state;
+  }
+  
   const top = state.discard[state.discard.length - 1];
-  if (!canPlay(card, top, state.currentSuit)) return state;
+  console.log('[playCard] Top card:', top, 'currentSuit:', state.currentSuit);
+  
+  if (!canPlay(card, top, state.currentSuit)) {
+    console.log('[playCard] Cannot play card:', card, 'on top:', top, 'with currentSuit:', state.currentSuit);
+    return state;
+  }
+  
+  console.log('[playCard] Removing card from hand at index:', cardIdx);
   hand.splice(cardIdx, 1);
+  console.log('[playCard] Player hand after removing card:', hand.map(c => `${c.value}${c.suit}`));
+  
   const hands = { ...state.hands, [player]: hand };
+  console.log('[playCard] Updated hands:', {
+    north: hands.north.map(c => `${c.value}${c.suit}`),
+    south: hands.south.map(c => `${c.value}${c.suit}`)
+  });
+  
   let currentSuit = card.suit;
   let chooseSuit = false;
+  
   if (card.value === '8') {
+    console.log('[playCard] Playing 8, setting chooseSuit to true');
     chooseSuit = true;
     if (newSuit) {
+      console.log('[playCard] New suit provided:', newSuit);
       currentSuit = newSuit;
       chooseSuit = false;
-    } else {
-      // Wait for player to choose suit
-      return { ...state, hands, chooseSuit: true };
     }
+    // Always add the 8 to discard pile, even if suit choice is pending
   }
+  
   const discard = [...state.discard, card];
-  const winner = hand.length === 0 ? player : null;
-  return {
+  console.log('[playCard] Updated discard pile:', discard.map(c => `${c.value}${c.suit}`));
+  
+  // Don't set winner when hand is empty - allow game to continue
+  const winner = null; // Removed: hand.length === 0 ? player : null;
+  if (winner) {
+    console.log('[playCard] Player won:', winner);
+  }
+  
+  const newState: GameState = {
     ...state,
     hands,
     discard,
     currentSuit,
-    turn: player === 'south' ? 'north' : 'south',
+    // Only switch turn if suit choice is not pending
+    turn: chooseSuit ? player : (player === 'south' ? 'north' as Player : 'south' as Player),
     winner,
     chooseSuit,
   };
+  
+  console.log('[playCard] Final state:', {
+    hands: { north: newState.hands.north.length, south: newState.hands.south.length },
+    discard: newState.discard.length,
+    turn: newState.turn,
+    currentSuit: newState.currentSuit,
+    winner: newState.winner,
+    chooseSuit: newState.chooseSuit
+  });
+  
+  return newState;
 }
 
 export function drawCard(state: GameState, player: Player): GameState {
@@ -93,7 +161,8 @@ export function drawCard(state: GameState, player: Player): GameState {
     winner: state.winner,
   });
   console.log('[BEFORE DRAW] player:', player, 'north:', state.hands.north, 'south:', state.hands.south);
-  if (state.winner) return state;
+  // Allow drawing even when there's a winner (empty hand scenario)
+  // if (state.winner) return state;
   let stock = state.stock;
   let discard = state.discard;
   // If stock is empty, reload from discard (except top card)

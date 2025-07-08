@@ -100,7 +100,15 @@ export default function IndexScreen() {
   }, []);
 
   const handleCrazy8Press = () => {
-    router.push('/GameLobby?gameType=crazy8');
+    router.push(`/GameLobby?gameType=crazy8&gameName=${encodeURIComponent('Crazy 8')}`);
+  };
+
+  const handleTop10Press = () => {
+    router.push(`/GameLobby?gameType=top10&gameName=${encodeURIComponent('Top 10')}`);
+  };
+
+  const handleCasinoPress = () => {
+    router.push(`/GameLobby?gameType=casino&gameName=${encodeURIComponent('Casino')}`);
   };
 
   const handleLogout = async () => {
@@ -187,7 +195,7 @@ export default function IndexScreen() {
           <View style={styles.buttonContainer}>
             <TouchableOpacity
               style={styles.button}
-              onPress={handleCrazy8Press}
+              onPress={handleTop10Press}
               activeOpacity={0.85}
             >
               <LinearGradient
@@ -207,7 +215,7 @@ export default function IndexScreen() {
           <View style={styles.buttonContainer}>
             <TouchableOpacity
               style={styles.button}
-              onPress={handleCrazy8Press}
+              onPress={handleCasinoPress}
               activeOpacity={0.85}
             >
               <LinearGradient

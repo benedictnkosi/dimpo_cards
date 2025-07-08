@@ -83,8 +83,8 @@ const styles = StyleSheet.create({
     lineHeight: 12,
   },
   cornerSuit: {
-    fontSize: 10,
-    lineHeight: 10,
+    fontSize: 16,
+    lineHeight: 16,
   },
   centerSuit: {
     position: 'absolute',

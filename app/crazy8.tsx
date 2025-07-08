@@ -237,9 +237,9 @@ export default function CasinoGameScreen() {
             stock: gameData.pile || [],
             discard: discardPile,
             turn: (gameData.turn === 'player1') === isP1 ? 'south' as Player : 'north' as Player,
-            currentSuit: gameData.currentCard?.suit || '♠',
+            currentSuit: gameData.currentSuit || gameData.currentCard?.suit || '♠',
             winner: gameData.status === 'finished' ? ((gameData.turn === 'player1') === isP1 ? 'south' as Player : 'north' as Player) : null,
-            chooseSuit: false
+            chooseSuit: gameData.chooseSuit || false
           };
           
           // Check for lastCardPlayed in opponent's player object
@@ -332,6 +332,12 @@ export default function CasinoGameScreen() {
     
     return () => clearTimeout(timeoutId);
   }, [game, currentGameId, isPlayer1, gamePhase]);
+
+  // Synchronize local choosingSuit state with game state's chooseSuit property
+  useEffect(() => {
+    console.log('[SUIT CHOOSER] game.chooseSuit changed to:', game.chooseSuit);
+    setChoosingSuit(game.chooseSuit);
+  }, [game.chooseSuit]);
 
   // Log all cards in discard pile on every render
   useEffect(() => {
@@ -452,18 +458,19 @@ export default function CasinoGameScreen() {
       
       // Handle South African numbers: if starts with 0, remove it and add +27
       if (formattedNumber.startsWith('0')) {
-        formattedNumber = '+27' + formattedNumber.substring(1);
+        formattedNumber = '27' + formattedNumber.substring(1);
       }
       
       // Try to open WhatsApp directly
-      const whatsappUrl = `whatsapp://send?phone=${formattedNumber}`;
-      
+      const whatsappUrl = `https://wa.me/${formattedNumber}`;
+      console.log('whatsappUrl', whatsappUrl);
       const supported = await Linking.canOpenURL(whatsappUrl);
       if (supported) {
         await Linking.openURL(whatsappUrl);
       } else {
         // Fallback to web WhatsApp
         const webWhatsappUrl = `https://wa.me/${formattedNumber}`;
+        console.log('webWhatsappUrl', webWhatsappUrl);
         await Linking.openURL(webWhatsappUrl);
       }
     } catch (error) {
@@ -503,8 +510,10 @@ export default function CasinoGameScreen() {
         pile: gameState.stock,
         currentCard: gameState.discard.length > 0 ? gameState.discard[gameState.discard.length - 1] : null,
         discardPile: gameState.discard,
+        currentSuit: gameState.currentSuit,
         turn: gameState.turn === 'south' ? (isPlayer1 ? 'player1' : 'player2') : (isPlayer1 ? 'player2' : 'player1'),
-        status: gameState.winner ? 'finished' : 'in-progress',
+        status: 'in-progress',
+        chooseSuit: gameState.chooseSuit,
         lastUpdated: serverTimestamp(),
       };
       
@@ -607,15 +616,19 @@ export default function CasinoGameScreen() {
 
   // Handle play for either player (with animation for south)
   async function handlePlay(player: Player, idx: number) {
+    console.log('[HANDLE PLAY] player:', player, 'idx:', idx, 'card:', game.hands[player][idx]);
     if (gamePhase !== 'playing') {
+      console.log('[HANDLE PLAY] gamePhase not playing');
       return;
     }
-    if ( game.winner !== null || game.chooseSuit) {
+    if (game.chooseSuit) {
+      console.log('[HANDLE PLAY] game is choosing suit');
       return;
     }
     const card = game.hands[player][idx];
     const top = game.discard[game.discard.length - 1];
     if (!canPlay(card, top, game.currentSuit)) {
+      console.log('[HANDLE PLAY] cannot play card');
       return;
     }
     // Store the current top card as the previous discard card
@@ -672,18 +685,30 @@ export default function CasinoGameScreen() {
   // Handle suit choice after 8
   async function handleChooseSuit(suit: string) {
     if (gamePhase !== 'playing') return;
-    const idx = game.hands[game.turn].findIndex(card => card.value === '8');
-    if (idx === -1) return;
-    setGame(prevGame => playCard(prevGame, game.turn, idx, suit));
+    if (!game.chooseSuit) return;
+    
+    console.log('[HANDLE CHOOSE SUIT] choosing suit:', suit);
+    
+    // Update the current suit and turn
+    const newGameState: GameState = {
+      ...game,
+      currentSuit: suit,
+      chooseSuit: false,
+      turn: game.turn === 'south' ? 'north' as Player : 'south' as Player,
+    };
+    
+    setGame(newGameState);
     setChoosingSuit(false);
-    // updateGameInFirebase should be called in a useEffect
+    
+    // Immediately update Firebase with the new game state
+    await updateGameInFirebase(newGameState);
   }
 
   // Handle draw
   async function handleDraw(player: Player) {
     // Only allow draw if it's the local player's turn
     if (gamePhase !== 'playing') return;
-    if (game.winner !== null || game.chooseSuit) return;
+    if (game.chooseSuit) return;
     // Compute the new game state after drawing a card
     const newGameState = drawCard(game, player);
     setGame(newGameState);
@@ -697,7 +722,7 @@ export default function CasinoGameScreen() {
   async function handleUndoPlay(player: Player) {
     // Only allow undo if it's the local player's turn and there are cards in discard pile
     if (gamePhase !== 'playing') return;
-    if (game.winner !== null || game.chooseSuit) return;
+    if (game.chooseSuit) return;
     if (game.discard.length <= 1) return; // Need at least 2 cards to undo (1 to keep as top, 1 to move back)
     
     // Create a new game state with the top card moved back to player's hand
@@ -724,8 +749,11 @@ export default function CasinoGameScreen() {
 
   // Helper for animation end
   function onPlayerCardAnimationEnd(player: Player, idx: number) {
+    console.log('[ANIMATION END] player:', player, 'idx:', idx);
     finishAnimation();
-    setGame(prevGame => playCard(prevGame, player, idx));
+    const newGameState = playCard(game, player, idx);
+    console.log('[ANIMATION END] new game state chooseSuit:', newGameState.chooseSuit);
+    setGame(newGameState);
     // updateGameInFirebase should be called in a useEffect
   }
 
@@ -796,11 +824,12 @@ export default function CasinoGameScreen() {
         (localTopCard.suit !== topCard.suit || localTopCard.value !== topCard.value)
       ) {
         console.log('opponent has added a card');
-  
+        const added = game.discard.length - prevDiscardLength.current;
+        if (added > 0) {
           setCenterCardTopToMiddleCard(topCard);
           setShowCenterCardTopToMiddle(true);
           animateCenterCardTopToMiddle();
-        
+        }
       }else{
         console.log('opponent has not added a card');
       }
@@ -811,6 +840,8 @@ export default function CasinoGameScreen() {
   // Add a loading state: show spinner if auth is loading, user is not loaded, or firebaseGameData is not loaded
   // Note: We don't wait for usernameLoading because we can use user.displayName as fallback
   const isLoading = authLoading || !user?.uid || !firebaseGameData;
+
+  const [showMenu, setShowMenu] = useState(false);
 
   if (isLoading) {
     return (
@@ -886,8 +917,64 @@ export default function CasinoGameScreen() {
           {/* PLAYING PHASE: Normal game UI */}
           {gamePhase === 'playing' && (
             <>
+              
+              
+              {/* North hand (opponent) */}
+              <View style={styles.northHandContainer}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.northHandRow}
+                  contentContainerStyle={{ alignItems: 'center', justifyContent: 'center' }}
+                >
+                  {game.hands.north.map((card, idx) => {
+                    const totalCards = game.hands.north.length;
+                    const maxRotation = 12; // Maximum rotation in degrees
+                    let rotation = 0;
+                    if (totalCards === 1) {
+                      rotation = 0;
+                    } else if (totalCards === 2) {
+                      rotation = idx === 0 ? -maxRotation : maxRotation;
+                    } else if (totalCards > 2) {
+                      // Spread from -maxRotation to +maxRotation
+                      rotation = -maxRotation + (2 * maxRotation * idx) / (totalCards - 1);
+                    }
+                    return (
+                      <View
+                        key={`${card.suit}-${card.value}-${idx}`}
+                        ref={ref => (northHandCardRefs.current[idx] = ref)}
+                        style={{
+                          marginLeft: idx === 0 ? 0 : -56,
+                          zIndex: idx,
+                          transform: [{ rotate: `${rotation}deg` }],
+                        }}
+                      >
+                        {getCardBack()}
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+                
+              </View>
+              
               {/* Discard and stock piles at center */}
               <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                {/* Current suit indicator - only show if different from top card */}
+                {game.discard.length > 0 && game.currentSuit !== game.discard[game.discard.length - 1].suit && (
+                  <View style={styles.currentSuitIndicator}>
+                    
+                    <ThemedText style={[
+                      styles.currentSuitSymbol, 
+                      { color: game.currentSuit === 'hearts' || game.currentSuit === 'diamonds' ? '#e11d48' : '#222' }
+                    ]}>
+                      {game.currentSuit === 'hearts' ? '♥' : 
+                       game.currentSuit === 'diamonds' ? '♦' : 
+                       game.currentSuit === 'clubs' ? '♣' : 
+                       game.currentSuit === 'spades' ? '♠' : game.currentSuit}
+                    </ThemedText>
+                  </View>
+                )}
+                
                 {/* Permanent facedown card at animation start position */}
                 <View style={{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }, { translateY: 0 }], zIndex: 50, alignItems: 'center' }}>
                   <TouchableOpacity
@@ -939,7 +1026,7 @@ export default function CasinoGameScreen() {
                   {/* Discard pile - show top 2 cards from firebase discardPile */}
                   <TouchableOpacity
                     onPress={() => handleUndoPlay('south')}
-                    disabled={ game.winner !== null || game.chooseSuit || (firebaseGameData?.discardPile?.length ?? game.discard.length) <= 1}
+                    disabled={game.chooseSuit || (firebaseGameData?.discardPile?.length ?? game.discard.length) <= 1}
                     style={{
                       alignItems: 'center',
                       position: 'relative',
@@ -961,158 +1048,206 @@ export default function CasinoGameScreen() {
                         {(() => {
                           const discardPile = firebaseGameData?.discardPile ?? game.discard;
                           const len = discardPile.length;
-                          // Show second-to-top card (if exists)
-                          if (len > 1) {
-                            const secondTop = discardPile[len - 2];
-                            return (
-                              <View style={{
+                          // Show last 4 cards from the discard pile
+                          const cardsToShow = [];
+                          
+                          // Fourth card from top (if exists)
+                          if (len > 3) {
+                            const fourthTop = discardPile[len - 4];
+                            cardsToShow.push(
+                              <View key="fourth" style={{
                                 position: 'absolute',
-                                left: -32,
-                                top: 16,
-                                zIndex: 1,
-                                opacity: 0.7,
+                                left: -86,
+                                top: 18,
+                                zIndex: 0,
+                                transform: [{ rotate: '-8deg' }],
                               }}>
-                                <CasinoCard suit={secondTop.suit} value={secondTop.value} style={{ width: 120, height: 170 }} />
+                                <CasinoCard suit={fourthTop.suit} value={fourthTop.value} style={{ width: 100, height: 140 }} />
                               </View>
                             );
                           }
-                          return null;
-                        })()}
-                        {(() => {
-                          const discardPile = firebaseGameData?.discardPile ?? game.discard;
-                          const len = discardPile.length;
+                          
+                          // Third card from top (if exists)
+                          if (len > 2) {
+                            const thirdTop = discardPile[len - 3];
+                            cardsToShow.push(
+                              <View key="third" style={{
+                                position: 'absolute',
+                                left: -64,
+                                top: 16,
+                                zIndex: 1,
+                                transform: [{ rotate: '5deg' }],
+                              }}>
+                                <CasinoCard suit={thirdTop.suit} value={thirdTop.value} style={{ width: 100, height: 140 }} />
+                              </View>
+                            );
+                          }
+                          
+                          // Second card from top (if exists)
+                          if (len > 1) {
+                            const secondTop = discardPile[len - 2];
+                            cardsToShow.push(
+                              <View key="second" style={{
+                                position: 'absolute',
+                                left: -32,
+                                top: 12,
+                                zIndex: 2,
+                                transform: [{ rotate: '-3deg' }],
+                              }}>
+                                <CasinoCard suit={secondTop.suit} value={secondTop.value} style={{ width: 100, height: 140 }} />
+                              </View>
+                            );
+                          }
+                          
+                          // Top card (always show if exists)
                           if (len > 0) {
                             const top = discardPile[len - 1];
-                            return (
-                              <View style={{
+                            cardsToShow.push(
+                              <View key="top" style={{
                                 position: 'absolute',
                                 left: 0,
                                 top: 0,
-                                zIndex: 2,
+                                zIndex: 3,
+                                transform: [{ rotate: '2deg' }],
                               }}>
-                                <CasinoCard suit={top.suit} value={top.value} style={{ width: 120, height: 170 }} />
+                                <CasinoCard suit={top.suit} value={top.value} style={{ width: 100 , height: 140 }} />
                               </View>
                             );
                           }
-                          return null;
+                          
+                          return cardsToShow;
                         })()}
                       </View>
                     </View>
                     {/* Show hint text when it's the player's turn and they can undo */}
-                    { game.winner === null && !game.chooseSuit && ((firebaseGameData?.discardPile?.length ?? game.discard.length) > 1) && (
+                    {!game.chooseSuit && ((firebaseGameData?.discardPile?.length ?? game.discard.length) > 1) && (
                       <ThemedText style={styles.undoHintText}>Tap to Undo</ThemedText>
                     )}
                   </TouchableOpacity>
                 </View>
               </View>
               
-              {/* South hand (player) */}
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.southHandRow}
-                contentContainerStyle={{ alignItems: 'center', justifyContent: 'center' }}
-              >
-                {game.hands.south.map((card, idx) => (
-                  <View
-                    key={`${card.suit}-${card.value}-${idx}`}
-                    ref={ref => (handCardRefs.current[idx] = ref)}
-                    style={{ marginLeft: idx === 0 ? 0 : -32, zIndex: idx }}
-                  >
-                    <TouchableOpacity
-                      onPress={() => handlePlay('south', idx)}
-                      disabled={ game.winner !== null || game.chooseSuit || !canPlay(card, game.discard[game.discard.length - 1], game.currentSuit)}
-                    >
-                      <CasinoCard suit={card.suit} value={card.value} style={{ width: 72, height: 104 }} />
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </ScrollView>
-              {/* Players at the edge of the screen */}
-              {([
-                { key: 'north', avatar: AVATARS[0], style: { position: 'absolute' as const, top: 24 + 32, alignItems: 'center' as const, marginTop: 32 } },
-                { key: 'south', avatar: AVATARS[2], style: { position: 'absolute' as const, bottom: 24, alignItems: 'center' as const } }
-              ] as const).map((player) => (
-                <View
-                  key={player.key}
-                  style={player.style}
+              {/* South hand (player) - moved to bottom */}
+              <View style={styles.southHandContainer}>
+                
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.southHandRow}
+                  contentContainerStyle={{ alignItems: 'center', justifyContent: 'center' }}
                 >
-                  {/* Soft glow for main player */}
-                  {player.key === 'south' && (
-                    <View style={styles.southGlow} />
-                  )}
-                  <Image source={player.avatar} style={styles.avatar} />
-                  <ThemedText style={styles.nameText}>{playerNames[player.key]}</ThemedText>
-                  
-                  {/* WhatsApp call button removed from here - will be placed at bottom right */}
-                  
-                  {/* Opponent's cards below avatar */}
-                  {player.key === 'north' && (
-                    <>
-                      <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        style={{ marginTop: 8, maxWidth: width - 40 }}
-                        contentContainerStyle={{ alignItems: 'center', justifyContent: 'center' }}
+                  {game.hands.south.map((card, idx) => {
+                    const totalCards = game.hands.south.length;
+                    const maxRotation = 12; // Maximum rotation in degrees
+                    let rotation = 0;
+                    if (totalCards === 1) {
+                      rotation = 0;
+                    } else if (totalCards === 2) {
+                      rotation = idx === 0 ? -maxRotation : maxRotation;
+                    } else if (totalCards > 2) {
+                      // Spread from -maxRotation to +maxRotation
+                      rotation = -maxRotation + (2 * maxRotation * idx) / (totalCards - 1);
+                    }
+                    return (
+                      <View
+                        key={`${card.suit}-${card.value}-${idx}`}
+                        ref={ref => (handCardRefs.current[idx] = ref)}
+                        style={{
+                          marginLeft: idx === 0 ? 0 : -56,
+                          zIndex: idx,
+                          transform: [{ rotate: `${rotation}deg` }],
+                        }}
                       >
-                        {game.hands.north.map((card, idx) => (
-                          <View
-                            key={`${card.suit}-${card.value}-${idx}`}
-                            ref={ref => (northHandCardRefs.current[idx] = ref)}
-                            style={{ marginLeft: idx === 0 ? 0 : -32, zIndex: idx }}
-                          >
-                            {getCardBack()}
-                          </View>
-                        ))}
-                      </ScrollView>
-                    </>
-                  )}
-                </View>
-              ))}
+                        <TouchableOpacity
+                          onPress={() => handlePlay('south', idx)}
+                          disabled={game.chooseSuit || !canPlay(card, game.discard[game.discard.length - 1], game.currentSuit)}
+                        >
+                          <CasinoCard suit={card.suit} value={card.value} style={{ width: 72, height: 104 }} />
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </View>
               
-              {/* Suit chooser after 8 */}
-              {choosingSuit && (
+              {/* Suit chooser after 8 - show for the player whose turn it is */}
+              {choosingSuit && game.turn === 'south' && (
                 <View style={styles.suitChooserRow}>
-                  {['hearts', 'diamonds', 'clubs', 'spades'].map(suit => (
-                    <TouchableOpacity key={suit} onPress={() => handleChooseSuit(suit)} style={styles.suitBtn}>
-                      <ThemedText style={styles.suitBtnText}>{suit}</ThemedText>
+                  {[
+                    { name: 'hearts', symbol: '♥', color: '#e11d48' },
+                    { name: 'diamonds', symbol: '♦', color: '#e11d48' },
+                    { name: 'clubs', symbol: '♣', color: '#222' },
+                    { name: 'spades', symbol: '♠', color: '#222' }
+                  ].map(suit => (
+                    <TouchableOpacity key={suit.name} onPress={() => handleChooseSuit(suit.name)} style={styles.suitBtn}>
+                      <ThemedText style={[styles.suitBtnText, { color: suit.color }]}>{suit.symbol}</ThemedText>
                     </TouchableOpacity>
                   ))}
+                </View>
+              )}
+              
+              {/* Waiting message for opponent when current player is choosing suit */}
+              {choosingSuit && game.turn === 'north' && (
+                <View style={styles.suitChooserRow}>
+                  <View style={styles.waitingForSuitContainer}>
+                    <ActivityIndicator size="small" color="#FFD700" style={{ marginBottom: 8 }} />
+                    <ThemedText style={styles.waitingForSuitText}>
+                      Waiting for opponent to choose suit...
+                    </ThemedText>
+                  </View>
                 </View>
               )}
             </>
           )}
         </LinearGradient>
         
-        {/* Leave game button - bottom left */}
+        {/* Menu button - top right */}
         {gamePhase === 'playing' && (
-          <View style={styles.leaveGameButtonWrapper}>
-            <View style={styles.leaveGameGlow} />
+          <View style={styles.menuButtonWrapper}>
             <TouchableOpacity
-              style={styles.leaveGameButtonBottomLeft}
-              onPress={handleLeaveGame}
+              style={styles.menuButton}
+              onPress={() => setShowMenu(!showMenu)}
               activeOpacity={0.7}
             >
-              <MaterialIcons name="exit-to-app" size={28} color="#fff" />
+              <MaterialIcons name="more-vert" size={28} color="#fff" />
             </TouchableOpacity>
-          </View>
-        )}
-        
-        {/* WhatsApp call button - bottom right */}
-        {gamePhase === 'playing' && opponentPhoneNumber && (
-          <View style={styles.whatsappCallButtonWrapper}>
-            <View style={styles.whatsappCallGlow} />
-            <TouchableOpacity
-              style={styles.whatsappCallButtonBottomRight}
-              onPress={handleWhatsAppCall}
-              activeOpacity={0.7}
-            >
-              <Image
-                source={require('../assets/images/whatsapp.png')}
-                style={{ width: 32, height: 32 }}
-                resizeMode="contain"
-              />
-            </TouchableOpacity>
+            
+            {/* Menu dropdown */}
+            {showMenu && (
+              <View style={styles.menuDropdown}>
+                {/* WhatsApp call option */}
+                {opponentPhoneNumber && (
+                  <TouchableOpacity
+                    style={styles.menuItem}
+                    onPress={() => {
+                      setShowMenu(false);
+                      handleWhatsAppCall();
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Image
+                      source={require('../assets/images/whatsapp.png')}
+                      style={{ width: 24, height: 24, marginRight: 12 }}
+                      resizeMode="contain"
+                    />
+                    <ThemedText style={styles.menuItemText}>Call Opponent</ThemedText>
+                  </TouchableOpacity>
+                )}
+                
+                {/* Leave game option */}
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => {
+                    setShowMenu(false);
+                    handleLeaveGame();
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <MaterialIcons name="exit-to-app" size={24} color="#dc2626" style={{ marginRight: 12 }} />
+                  <ThemedText style={[styles.menuItemText, { color: '#dc2626' }]}>Leave Game</ThemedText>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
       </ThemedView>
@@ -1225,25 +1360,41 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 1 },
   },
+  northHandContainer: {
+    position: 'absolute',
+    top: 60,
+    left: 0,
+    right: 0,
+    zIndex: 3,
+    alignItems: 'center',
+  },
   northHandRow: {
     flexDirection: 'row',
-    marginTop: 12,
     marginBottom: 0,
     zIndex: 2,
+    height: 134,
+  },
+  southHandContainer: {
+    position: 'absolute',
+    bottom: 20,
+    left: 0,
+    right: 0,
+    zIndex: 3,
+    alignItems: 'center',
   },
   southHandRow: {
     flexDirection: 'row',
-    position: 'absolute',
-    bottom: 120,
     zIndex: 3,
+    height: 134,
+    marginTop: 8,
+    paddingTop: 12,
   },
-  avatar: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    borderWidth: 3,
-    borderColor: '#fff',
-    marginBottom: 6,
+  playerNameTop: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 4,
   },
   nameText: {
     color: '#fff',
@@ -1252,16 +1403,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     opacity: 0.92,
     textAlign: 'center',
-  },
-  southGlow: {
-    position: 'absolute',
-    top: -10,
-    left: -10,
-    right: -10,
-    bottom: -10,
-    borderRadius: 50,
-    backgroundColor: 'rgba(34, 197, 94, 0.18)',
-    zIndex: -1,
   },
   statusRow: {
     position: 'absolute',
@@ -1318,25 +1459,28 @@ const styles = StyleSheet.create({
   suitBtn: {
     backgroundColor: '#fff',
     marginHorizontal: 10,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 18,
-    borderWidth: 2,
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderRadius: 20,
+    borderWidth: 3,
     borderColor: '#19C37D',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
   suitBtnText: {
-    color: '#19C37D',
     fontWeight: 'bold',
-    fontSize: 18,
-    textTransform: 'capitalize',
+    fontSize: 32,
   },
 
   drawHintText: {
-    color: '#444',
     fontSize: 12,
     fontWeight: '500',
     opacity: 1,
     textAlign: 'center',
+    color: '#fff',
   },
   undoHintText: {
     color: '#fff',
@@ -1344,480 +1488,91 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     opacity: 0.8,
     textAlign: 'center',
-    marginTop: 24,
+    marginTop: 8,
   },
 
-  welcomeFadeIn: {
-    flex: 1,
+  currentSuitIndicator: {
+    position: 'absolute',
+    top: '20%',
+    left: 0,
+    right: 0,
     alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
+    zIndex: 10,
   },
-  welcomeCard: {
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 32,
-    paddingVertical: 36,
-    paddingHorizontal: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.10,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 8 },
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.22)',
-    marginBottom: 32,
-    width: width > 400 ? 380 : '90%',
-    minWidth: 320,
-  },
-  welcomeLogo: {
-    width: 72,
-    height: 72,
-    marginBottom: 18,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    shadowColor: '#22c55e',
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  waitingGamesList: {
-    width: '100%',
-    marginTop: 8,
-    borderRadius: 18,
-    backgroundColor: 'rgba(34,197,94,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(34,197,94,0.18)',
-    paddingVertical: 6,
-    paddingHorizontal: 2,
-    shadowColor: '#22c55e',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    minHeight: 32,
-  },
-  footer: {
-    marginTop: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-  },
-  footerText: {
+  currentSuitLabel: {
     color: '#fff',
-    fontSize: 13,
-    opacity: 0.5,
-    textAlign: 'center',
-  },
-  welcomeBg: {
-    backgroundColor: '#f7f7fa',
-  },
-  // Modernized welcome card styles
-  welcomeCardModern: {
-    backgroundColor: 'rgba(255,255,255,0.55)',
-    borderRadius: 36,
-    paddingVertical: 40,
-    paddingHorizontal: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#22c55e',
-    shadowOpacity: 0.12,
-    shadowRadius: 32,
-    shadowOffset: { width: 0, height: 8 },
-    borderWidth: 1.5,
-    borderColor: 'rgba(34,197,94,0.13)',
-    marginBottom: 32,
-    width: width > 400 ? 400 : '92%',
-    minWidth: 320,
-    backdropFilter: 'blur(12px)', // for web, ignored on native
-  },
-  welcomeTitleModern: {
-    color: '#222',
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginBottom: 8,
-    textAlign: 'center',
-    letterSpacing: 0.5,
-  },
-  welcomeSubtitleModern: {
-    color: '#444',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '500',
-    marginBottom: 24,
+    opacity: 0.9,
     textAlign: 'center',
-    opacity: 0.85,
-  },
-  dealBtnModern: {
-    backgroundColor: '#19C37D',
-    marginLeft: 0,
-    paddingHorizontal: 36,
-    paddingVertical: 20,
-    borderRadius: 32,
-    elevation: 6,
-    shadowColor: '#19C37D',
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    marginBottom: 18,
-    width: '100%',
-  },
-  dealBtnTextModern: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 22,
-    letterSpacing: 1,
-    textAlign: 'center',
-  },
-  dividerModern: {
-    width: '80%',
-    height: 1.5,
-    backgroundColor: 'rgba(34,197,94,0.13)',
-    marginVertical: 18,
-    borderRadius: 1,
-    alignSelf: 'center',
-  },
-  waitingTitleModern: {
-    color: '#222',
-    fontSize: 17,
-    fontWeight: 'bold',
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  noGamesModernRow: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-  noGamesBigEmoji: {
-    fontSize: 54,
-    marginBottom: 8,
-    textAlign: 'center',
-    textShadowColor: '#FFD700',
-    textShadowOffset: { width: 0, height: 4 },
-    textShadowRadius: 16,
-  },
-  noGamesPlayfulText: {
-    color: '#FFD700',
-    fontSize: 18,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    textShadowColor: '#222',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 6,
     marginBottom: 4,
   },
-  waitingGamesListModern: {
-    width: '100%',
-    marginTop: 8,
-    
-    backgroundColor: 'rgba(34,197,94,0.06)',
-   
-    paddingVertical: 6,
-    paddingHorizontal: 2,
-    shadowColor: '#22c55e',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    minHeight: 32,
-    alignItems: 'center',
-  },
-  waitingGameBtnModern: {
-    backgroundColor: '#fffbe6', // subtle gold/cream
-    paddingHorizontal: 22,
-    paddingVertical: 16,
-    borderRadius: 22,
-    marginTop: 0,
-    marginBottom: 18,
-    shadowColor: '#FFD700',
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    borderWidth: 2,
-    borderColor: '#FFD700',
-    width: 240,
-    alignItems: 'center',
-    elevation: 4,
-  },
-  waitingGameTextModern: {
-    color: '#19C37D',
+  currentSuitSymbol: {
+    fontSize: 48,
     fontWeight: 'bold',
-    fontSize: 20,
-    marginBottom: 2,
-    textShadowColor: '#FFD700',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-    letterSpacing: 0.5,
-  },
-  gameInfoContainerModern: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gameDateTextModern: {
-    color: '#555',
-    fontSize: 12,
-    opacity: 1,
-    marginTop: 2,
-  },
-  casinoTitle: {
-    color: '#FFD700',
-    fontSize: 32,
-    fontWeight: 'bold',
-    marginTop: 32,
-    marginBottom: 8,
-    textShadowColor: '#222',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 8,
-    letterSpacing: 1.2,
     textAlign: 'center',
   },
-  glowCardBackContainer: {
+
+  waitingForSuitContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 24,
-    marginBottom: 16,
+    paddingVertical: 20,
   },
-  glowCardBack: {
-    position: 'absolute',
-    width: 66,
-    height: 90,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 215, 0, 0.18)',
-    shadowColor: '#FFD700',
-    shadowOpacity: 0.7,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 0 },
-    zIndex: -1,
-  },
-  waitingMessagePlayful: {
+  waitingForSuitText: {
     color: '#FFD700',
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginTop: 18,
-    marginBottom: 18,
-    textAlign: 'center',
-    textShadowColor: '#222',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 8,
-    letterSpacing: 1.1,
-  },
-  cornerEmoji: {
-    fontSize: 32,
-    opacity: 0.85,
-  },
-  cornerEmojiTL: {
-    position: 'absolute',
-    top: 18,
-    left: 18,
-  },
-  cornerEmojiTR: {
-    position: 'absolute',
-    top: 18,
-    right: 18,
-  },
-  cornerEmojiBL: {
-    position: 'absolute',
-    bottom: 32,
-    left: 18,
-  },
-  cornerEmojiBR: {
-    position: 'absolute',
-    bottom: 32,
-    right: 18,
-  },
-  cornerEmojiTop: {
-    marginTop: 18,
-  },
-  waitingGamesSection: {
-    marginTop: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cancelGameBtn: {
-    backgroundColor: 'rgba(220,38,38,0.9)',
-    borderRadius: 20,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    shadowColor: '#dc2626',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-    alignItems: 'center',
-    alignSelf: 'center',
-    marginBottom: 24,
-  },
-  cancelGameBtnText: {
     fontSize: 16,
-    color: '#fff',
-    fontWeight: 'bold',
-    textShadowColor: '#222',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  waitingContainer: {
-    marginLeft: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  waitingMessage: {
-    color: '#FFD700',
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontWeight: '500',
     textAlign: 'center',
-    opacity: 1,
-    textShadowColor: '#222',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 6,
-    letterSpacing: 0.5,
-    marginBottom: 8,
   },
-  bigDeckContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 24,
-    marginBottom: 24,
-    position: 'relative',
-  },
-  bigDeckGlow: {
+
+  // Menu styles
+  menuButtonWrapper: {
     position: 'absolute',
-    width: 140,
-    height: 200,
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 215, 0, 0.18)',
-    shadowColor: '#FFD700',
-    shadowOpacity: 0.7,
-    shadowRadius: 32,
-    shadowOffset: { width: 0, height: 0 },
-    zIndex: -1,
-  },
-  bigDeckImage: {
-    width: 120,
-    height: 180,
-    borderRadius: 18,
-    borderWidth: 3,
-    borderColor: '#FFD700',
-    shadowColor: '#222',
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-  },
-  dealBtnModernBig: {
-    backgroundColor: 'linear-gradient(90deg, #FFD700 0%, #19C37D 100%)',
-    marginLeft: 24,
-    paddingHorizontal: 48,
-    paddingVertical: 22,
-    borderRadius: 36,
-    elevation: 8,
-    shadowColor: '#FFD700',
-    shadowOpacity: 0.22,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 6 },
-    marginTop: 12,
-    marginBottom: 8,
-    width: 260,
-    alignItems: 'center',
-  },
-  dealBtnTextModernBig: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 28,
-    letterSpacing: 1.2,
-    textAlign: 'center',
-    textShadowColor: '#FFD700',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 8,
-  },
-  whatsappCallButtonWrapper: {
-    position: 'absolute',
-    bottom: 20,
+    top: 48,
     right: 20,
-    width: 64,
-    height: 64,
-    alignItems: 'center',
-    justifyContent: 'center',
     zIndex: 1000,
   },
-  whatsappCallGlow: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(37, 211, 102, 0.3)',
-    shadowColor: '#25D366',
-    shadowOpacity: 0.6,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
-    zIndex: 0,
-  },
-  whatsappCallButtonBottomRight: {
-    position: 'absolute',
-    left: 8,
-    top: 8,
+  menuButton: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#25D366',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#25D366',
+    shadowColor: '#000',
     shadowOpacity: 0.4,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  menuDropdown: {
+    position: 'absolute',
+    top: 56,
+    right: 0,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingVertical: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
     elevation: 8,
-    zIndex: 1,
+    minWidth: 180,
   },
-  whatsappCallButton: {
-    backgroundColor: '#25D366',
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  menuItem: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 8,
-    shadowColor: '#25D366',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-  },
-  whatsappCallText: {
-    fontSize: 18,
-    color: '#fff',
-  },
-  whatsappCallContainer: {
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  whatsappCallHint: {
-    fontSize: 10,
-    color: '#fff',
-    opacity: 0.8,
-    marginTop: 2,
-  },
-  leaveGameBtn: {
-    backgroundColor: 'rgba(220,38,38,0.9)',
-    borderRadius: 20,
-    paddingHorizontal: 24,
+    paddingHorizontal: 16,
     paddingVertical: 12,
-    shadowColor: '#dc2626',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-    alignItems: 'center',
-    alignSelf: 'center',
-    marginTop: 16,
   },
-  leaveGameBtnText: {
+  menuItemText: {
     fontSize: 16,
-    color: '#fff',
-    fontWeight: 'bold',
-    textShadowColor: '#222',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
+    fontWeight: '500',
+    color: '#333',
   },
+
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
@@ -1874,46 +1629,5 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
-  },
-  leaveGameButtonWrapper: {
-    position: 'absolute',
-    bottom: 20,
-    left: 20,
-    width: 64,
-    height: 64,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  },
-  leaveGameGlow: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(220, 38, 38, 0.3)',
-    shadowColor: '#dc2626',
-    shadowOpacity: 0.6,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
-    zIndex: 0,
-  },
-  leaveGameButtonBottomLeft: {
-    position: 'absolute',
-    left: 8,
-    top: 8,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#dc2626',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#dc2626',
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
-    zIndex: 1,
   },
 });

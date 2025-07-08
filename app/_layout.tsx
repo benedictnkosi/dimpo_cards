@@ -100,6 +100,8 @@ function RootLayoutNav() {
             >
               <Stack.Screen name="index" />
               <Stack.Screen name="crazy8" />
+              <Stack.Screen name="top10" />
+              <Stack.Screen name="GameLobby" />
               <Stack.Screen name="books-test" />
               <Stack.Screen name="savings" />
               <Stack.Screen name="savings-test" />

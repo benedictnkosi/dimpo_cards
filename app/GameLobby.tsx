@@ -16,7 +16,10 @@ const { width } = Dimensions.get('window');
 export default function GameLobby() {
   const { user } = useAuth();
   const router = useRouter();
-  const { gameType } = useLocalSearchParams();
+  const { gameType, gameName } = useLocalSearchParams();
+  
+  // Decode the game name if it's URL encoded
+  const decodedGameName = gameName ? decodeURIComponent(gameName as string) : 'Crazy 8';
 
   // --- Game initialization state ---
   const [currentGameId, setCurrentGameId] = useState<string | null>(null);
@@ -57,7 +60,6 @@ export default function GameLobby() {
       try {
         const storedUsername = await AsyncStorage.getItem('username');
         setLocalUsername(storedUsername || '');
-        console.log('GameLobby - Loaded local username from AsyncStorage:', storedUsername);
       } catch (error) {
         console.error('GameLobby - Error loading local username:', error);
       }
@@ -72,10 +74,8 @@ export default function GameLobby() {
       if (user?.uid) {
         try {
           const player = await getPlayer(user.uid);
-          console.log('GameLobby - Firebase player data:', player);
           if (player?.userName) {
             setFirebaseUsername(player.userName);
-            console.log('GameLobby - Set Firebase username to:', player.userName);
           }
         } catch (error) {
           console.error('GameLobby - Error fetching Firebase username:', error);
@@ -97,35 +97,22 @@ export default function GameLobby() {
 
   // Listen for current game updates
   useEffect(() => {
-    console.log('👂 Game listener - Setting up listener for currentGameId:', currentGameId);
-    
     if (!currentGameId) {
-      console.log('👂 Game listener - No currentGameId, returning');
       return;
     }
     
     const gameDoc = doc(db, 'games', currentGameId);
     const unsub = onSnapshot(gameDoc, (docSnapshot) => {
-      console.log('👂 Game listener - Document snapshot received:', {
-        exists: docSnapshot.exists(),
-        id: docSnapshot.id,
-        data: docSnapshot.exists() ? docSnapshot.data() : null
-      });
-      
       if (!docSnapshot.exists()) {
-        console.log('🚨 Game listener - Document does not exist, setting firebaseGameData to null');
         setFirebaseGameData(null);
         return;
       }
       
       const gameData = docSnapshot.data();
-      console.log('✅ Game listener - Setting firebaseGameData:', gameData);
       setFirebaseGameData(gameData);
     });
     
-    console.log('👂 Game listener - Listener set up, returning cleanup function');
     return () => {
-      console.log('👂 Game listener - Cleaning up listener');
       unsub();
     };
   }, [currentGameId]);
@@ -141,24 +128,17 @@ export default function GameLobby() {
 
   // Listen for game cancellation/deletion
   useEffect(() => {
-    console.log('🔍 Game cancellation detection - currentGameId:', currentGameId);
-    console.log('🔍 Game cancellation detection - firebaseGameData:', firebaseGameData);
-    console.log('🔍 Game cancellation detection - justSetGameId:', justSetGameId.current);
-    
     if (!currentGameId) {
-      console.log('🔍 Game cancellation detection - No currentGameId, returning');
       return;
     }
 
     // Skip detection if we just set the game ID (race condition prevention)
     if (justSetGameId.current) {
-      console.log('🔍 Game cancellation detection - Just set game ID, skipping detection');
       return;
     }
 
     // If firebaseGameData is null but we have a currentGameId, the game was likely deleted
     if (!firebaseGameData && currentGameId) {
-      console.log('🚨 Game cancellation detection - Game was deleted! Showing modal');
       setCancelledGameInfo({
         cancelledBy: 'Opponent',
         reason: 'Game was deleted'
@@ -168,32 +148,36 @@ export default function GameLobby() {
     }
 
     if (!firebaseGameData) {
-      console.log('🔍 Game cancellation detection - No firebaseGameData, returning');
       return;
     }
 
     // Check if game was deleted or cancelled
     if (firebaseGameData.status === 'cancelled' || firebaseGameData.status === 'deleted') {
-      console.log('🚨 Game cancellation detection - Game status is cancelled/deleted:', firebaseGameData.status);
       const cancelledBy = firebaseGameData.cancelledBy || 'Opponent';
       const reason = firebaseGameData.cancellationReason || 'Game was cancelled';
-      
-      console.log('🚨 Game cancellation detection - Showing modal with:', { cancelledBy, reason });
       
       setCancelledGameInfo({
         cancelledBy,
         reason
       });
       setShowGameCancelledPopup(true);
-    } else {
-      console.log('🔍 Game cancellation detection - Game status is normal:', firebaseGameData.status);
     }
   }, [firebaseGameData, currentGameId]);
 
-  // Redirect to /crazy8 when game status is 'started' and currentGameId is set
+  // Redirect to appropriate game screen when game status is 'started' and currentGameId is set
   useEffect(() => {
     if (firebaseGameData?.status === 'started' && currentGameId) {
-      router.push(`/crazy8?gameId=${currentGameId}`);
+      // Determine which game screen to load based on gameType
+      const gameType = firebaseGameData?.gameType || 'crazy8';
+      
+      if (gameType === 'top10') {
+        router.push(`/top10?gameId=${currentGameId}`);
+      } else if (gameType === 'casino') {
+        router.push(`/casino?gameId=${currentGameId}`);
+      } else {
+        // Default to crazy8 for all other game types
+        router.push(`/crazy8?gameId=${currentGameId}`);
+      }
     }
   }, [firebaseGameData?.status, currentGameId]);
 
@@ -215,15 +199,9 @@ export default function GameLobby() {
       return;
     }
     try {
-      console.log('🎯 handleStartNewGame - Starting new game creation');
-      console.log('👤 handleStartNewGame - firebaseUsername:', firebaseUsername);
-      console.log('👤 handleStartNewGame - user?.uid:', user?.uid);
-      
       // Delete only games where the current user is player1 (host) and game is waiting/pending
       const gamesQuery = query(collection(db, 'games'));
       const gamesSnapshot = await getDocs(gamesQuery);
-      
-      console.log('📊 handleStartNewGame - Total games found:', gamesSnapshot.docs.length);
       
       const gamesToDelete = gamesSnapshot.docs.filter(doc => {
         const gameData = doc.data();
@@ -231,36 +209,23 @@ export default function GameLobby() {
         const isPlayer1 = player1Name === firebaseUsername;
         const isWaitingOrPending = gameData.status === 'waiting' || gameData.status === 'pending_acceptance';
         
-        console.log('🔍 handleStartNewGame - Checking game:', {
-          gameId: doc.id,
-          player1Name,
-          gameStatus: gameData.status,
-          isPlayer1,
-          isWaitingOrPending,
-          willDelete: isPlayer1 && isWaitingOrPending
-        });
-        
         return isPlayer1 && isWaitingOrPending;
       });
       
-      console.log('🗑️ handleStartNewGame - Games to delete:', gamesToDelete.length);
-      
       const deletePromises = gamesToDelete.map(doc => {
-        console.log('🗑️ handleStartNewGame - Deleting game:', doc.id);
         return deleteDoc(doc.ref);
       });
       
       await Promise.all(deletePromises);
-      console.log('✅ handleStartNewGame - Finished deleting games');
       
       const playerName = firebaseUsername;
-      console.log('🎯 handleStartNewGame - Final player name being used:', playerName);
       
       const docRef = await addDoc(collection(db, 'games'), {
         status: 'waiting',
         createdAt: serverTimestamp(),
         gameName: playerName,
         gameType: gameType || 'default',
+        gameDisplayName: decodedGameName,
         players: {
           player1: {
             name: playerName,
@@ -270,7 +235,6 @@ export default function GameLobby() {
         },
       });
       
-      console.log('✅ handleStartNewGame - New game created with ID:', docRef.id);
       setCurrentGameId(docRef.id);
       
       // Set flag to prevent race condition in cancellation detection
@@ -299,7 +263,6 @@ export default function GameLobby() {
       const gameData = gameSnap.exists() ? gameSnap.data() : null;
       if (gameData && (!gameData.players.player2 || !gameData.players.player2.name)) {
         const playerName = firebaseUsername;
-        console.log('handleJoinGame - Final player name being used:', playerName);
         
         await updateDoc(gameDocRef, {
           status: 'pending_acceptance',
@@ -334,6 +297,21 @@ export default function GameLobby() {
       });
     } catch (err) {
       console.error('Error accepting opponent:', err);
+    }
+  }
+
+  // Decline opponent (for player 1)
+  async function handleDeclineOpponent() {
+    if (!currentGameId) return;
+    try {
+      const gameDocRef = doc(db, 'games', currentGameId);
+      await updateDoc(gameDocRef, {
+        status: 'cancelled',
+        cancelledBy: firebaseUsername,
+        cancellationReason: 'Host declined the opponent',
+      });
+    } catch (err) {
+      console.error('Error declining opponent:', err);
     }
   }
 
@@ -383,7 +361,7 @@ export default function GameLobby() {
       style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}
     >
       {/* Playful casino title */}
-      <ThemedText style={styles.casinoTitle}>🎲 Dimpo Crazy 8 🎰</ThemedText>
+      <ThemedText style={styles.casinoTitle}>🎲 Dimpo {decodedGameName} 🎰</ThemedText>
       
       {/* Casino/joker mascot emoji */}
       <LegacyAnimated.Text
@@ -419,15 +397,20 @@ export default function GameLobby() {
       
       {/* Animated waiting message (show if waiting for opponent or pending acceptance) */}
       {firebaseGameData && (firebaseGameData.status === 'waiting' || firebaseGameData.status === 'pending_acceptance') && (
-        // Host sees accept button if pending_acceptance and player2 has joined
+        // Host sees accept/decline buttons if pending_acceptance and player2 has joined
         (isPlayer1 === true && firebaseGameData.status === 'pending_acceptance' && !!firebaseGameData.players?.player2?.name) ? (
           <View style={styles.acceptContainer}>
             <ThemedText style={styles.opponentJoinedText}>
               {firebaseGameData.players.player2.name} wants to join!
             </ThemedText>
-            <TouchableOpacity style={styles.acceptBtn} onPress={handleAcceptOpponent}>
-              <ThemedText style={styles.acceptBtnText}>Accept Opponent</ThemedText>
-            </TouchableOpacity>
+            <View style={styles.buttonRow}>
+              <TouchableOpacity style={styles.acceptBtn} onPress={handleAcceptOpponent}>
+                <ThemedText style={styles.acceptBtnText}>Accept</ThemedText>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.declineBtn} onPress={handleDeclineOpponent}>
+                <ThemedText style={styles.declineBtnText}>Decline</ThemedText>
+              </TouchableOpacity>
+            </View>
           </View>
         ) :
         // Player 2 sees waiting for host to accept
@@ -528,8 +511,19 @@ export default function GameLobby() {
         </TouchableOpacity>
       )}
       
+      {/* Exit button - show when no started game */}
+      {(!firebaseGameData || firebaseGameData.status !== 'started') && (
+        <TouchableOpacity
+          style={styles.exitBtn}
+          onPress={() => router.push('/')}
+          activeOpacity={0.7}
+        >
+          <ThemedText style={styles.exitBtnText}>🚪 Exit to Menu</ThemedText>
+        </TouchableOpacity>
+      )}
+      
       {/* Footer */}
-      <View style={styles.footer}><ThemedText style={styles.footerText}>© {new Date().getFullYear()} Dimpo Crazy 8</ThemedText></View>
+      <View style={styles.footer}><ThemedText style={styles.footerText}>© {new Date().getFullYear()} Dimpo {decodedGameName}</ThemedText></View>
       
       {/* Game Cancelled Popup */}
       <Modal
@@ -541,12 +535,10 @@ export default function GameLobby() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <ThemedText style={styles.modalTitle}>🎲 Game Cancelled</ThemedText>
+              <ThemedText style={styles.modalTitle}>🤔 This is not good</ThemedText>
             </View>
             <View style={styles.modalBody}>
-              <ThemedText style={styles.modalMessage}>
-               cancelled the game.
-              </ThemedText>
+              
               <ThemedText style={styles.modalSubMessage}>
                 {cancelledGameInfo?.reason || 'The game has been cancelled.'}
               </ThemedText>
@@ -638,6 +630,24 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   acceptBtnText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+  },
+  declineBtn: {
+    backgroundColor: '#dc2626',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 20,
+    elevation: 3,
+  },
+  declineBtnText: {
     color: '#fff',
     fontWeight: 'bold',
     fontSize: 16,
@@ -838,5 +848,28 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  exitBtn: {
+    backgroundColor: 'rgba(107, 114, 128, 0.9)',
+    borderRadius: 20,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    shadowColor: '#6b7280',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+    alignItems: 'center',
+    alignSelf: 'center',
+    marginBottom: 16,
+    marginTop: 16,
+  },
+  exitBtnText: {
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: 'bold',
+    textShadowColor: '#222',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
 }); 

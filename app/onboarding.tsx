@@ -373,6 +373,17 @@ export default function OnboardingScreen() {
 
   const handleComplete = async () => {
     try {
+      // Validate WhatsApp number if provided
+      if (whatsappNumber && (whatsappNumber.length !== 10 || !whatsappNumber.startsWith('0'))) {
+        Toast.show({
+          type: 'error',
+          text1: 'Invalid Phone Number',
+          text2: 'Please enter a 10-digit number starting with 0',
+          position: 'bottom'
+        });
+        return;
+      }
+
       // Track onboarding completion
       analytics.track('casino_onboarding_completed', {
         method: 'anonymous',
@@ -504,19 +515,35 @@ export default function OnboardingScreen() {
                   testID="user-name-input"
                 />
                 
-                <TextInput
-                  style={[styles.textInput, { 
-                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : '#FFFFFF',
-                    color: isDark ? '#FFFFFF' : '#1E293B',
-                    borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : '#E2E8F0'
-                  }]}
-                  placeholder="WhatsApp number (e.g., +27 123 456 789)"
-                  placeholderTextColor={isDark ? 'rgba(255, 255, 255, 0.6)' : '#94A3B8'}
-                  value={whatsappNumber}
-                  onChangeText={setWhatsappNumber}
-                  keyboardType="phone-pad"
-                  testID="whatsapp-number-input"
-                />
+                <View>
+                  <TextInput
+                    style={[styles.textInput, { 
+                      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : '#FFFFFF',
+                      color: isDark ? '#FFFFFF' : '#1E293B',
+                      borderColor: whatsappNumber && whatsappNumber.length > 0 && (whatsappNumber.length !== 10 || !whatsappNumber.startsWith('0')) 
+                        ? '#F43F5E' 
+                        : isDark ? 'rgba(255, 255, 255, 0.2)' : '#E2E8F0'
+                    }]}
+                    placeholder="WhatsApp number (e.g., 0123456789)"
+                    placeholderTextColor={isDark ? 'rgba(255, 255, 255, 0.6)' : '#94A3B8'}
+                    value={whatsappNumber}
+                    onChangeText={(text) => {
+                      // Only allow digits and limit to 10 characters
+                      const cleaned = text.replace(/[^0-9]/g, '');
+                      if (cleaned.length <= 10) {
+                        setWhatsappNumber(cleaned);
+                      }
+                    }}
+                    keyboardType="phone-pad"
+                    maxLength={10}
+                    testID="whatsapp-number-input"
+                  />
+                  {whatsappNumber && whatsappNumber.length > 0 && (whatsappNumber.length !== 10 || !whatsappNumber.startsWith('0')) && (
+                    <ThemedText style={[styles.errorText, { fontSize: 12, marginTop: 4, marginLeft: 4 }]}>
+                      Please enter a 10-digit number starting with 0
+                    </ThemedText>
+                  )}
+                </View>
               </View>
               
               <View style={styles.infoCard}>
