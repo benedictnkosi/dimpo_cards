@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, TouchableOpacity, ScrollView, Animated, Easing, Image } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ScrollView, Animated, Easing, Image, Share } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,245 +11,286 @@ import { getPlayer } from '@/services/playersService';
 import { deleteGamesWherePlayer1 } from '@/services/gamesService';
 
 export default function IndexScreen() {
-  const { colors, isDark } = useTheme();
-  const { signOut, user } = useAuth();
-  const insets = useSafeAreaInsets();
-  const [cardAnim] = useState(new Animated.Value(0));
-  const [welcomeAnim] = useState(new Animated.Value(0));
-  const [playerName, setPlayerName] = useState<string>('');
-  const [isPlayerLoading, setIsPlayerLoading] = useState<boolean>(true);
+  console.log('[IndexScreen] Render start');
+  try {
+    const { colors, isDark } = useTheme();
+    const { signOut, user } = useAuth();
+    const insets = useSafeAreaInsets();
+    const [cardAnim] = useState(new Animated.Value(0));
+    const [welcomeAnim] = useState(new Animated.Value(0));
+    const [playerName, setPlayerName] = useState<string>('');
+    const [isPlayerLoading, setIsPlayerLoading] = useState<boolean>(true);
 
-  useEffect(() => {
-    const fetchPlayerName = async () => {
-      if (user?.uid) {
-        setIsPlayerLoading(true);
-        try {
-          const player = await getPlayer(user.uid);
-          console.log('Firebase player data:', player);
-          console.log('Player username from Firebase:', player?.userName);
-          console.log('Player displayName from Firebase:', player?.displayName);
-          // Use Firestore data for player name
-          setPlayerName(player?.userName || player?.displayName || 'Player');
-        } catch (e) {
-          console.error('Error fetching player from Firebase:', e);
-          setPlayerName('Player');
-        } finally {
-          setIsPlayerLoading(false);
+    useEffect(() => {
+      console.log('[IndexScreen] useEffect: fetchPlayerName');
+      const fetchPlayerName = async () => {
+        if (user?.uid) {
+          setIsPlayerLoading(true);
+          try {
+            const player = await getPlayer(user.uid);
+            console.log('[IndexScreen] Firebase player data:', player);
+            console.log('[IndexScreen] Player username from Firebase:', player?.userName);
+            console.log('[IndexScreen] Player displayName from Firebase:', player?.displayName);
+            setPlayerName(player?.userName || player?.displayName || 'Player');
+          } catch (e) {
+            console.error('[IndexScreen] Error fetching player from Firebase:', e);
+            setPlayerName('Player');
+          } finally {
+            setIsPlayerLoading(false);
+          }
         }
+      };
+      try {
+        fetchPlayerName();
+      } catch (err) {
+        console.error('[IndexScreen] useEffect error:', err);
+      }
+    }, [user?.uid]);
+
+    useFocusEffect(
+      React.useCallback(() => {
+        console.log('[IndexScreen] useFocusEffect triggered');
+        const deletePlayer1Games = async () => {
+          console.log('[IndexScreen] 🔄 Starting deletePlayer1Games function');
+          console.log('[IndexScreen] 👤 Current playerName:', playerName);
+          console.log('[IndexScreen] 📊 Player loading state:', { isLoading: isPlayerLoading, playerName });
+          if (isPlayerLoading) {
+            console.log('[IndexScreen] ⏳ Player name still loading, waiting...');
+            return;
+          }
+          if (playerName && playerName !== 'Player') {
+            console.log('[IndexScreen] ✅ Player name exists, proceeding with game deletion');
+            try {
+              console.log('[IndexScreen] 🗑️ Calling deleteGamesWherePlayer1 with playerName:', playerName);
+              const result = await deleteGamesWherePlayer1(playerName);
+              console.log('[IndexScreen] ✅ Successfully deleted games where user is player1. Result:', result);
+            } catch (error) {
+              console.error('[IndexScreen] ❌ Error deleting games where user is player1:', error);
+              console.error('[IndexScreen] 🔍 Error details:', {
+                message: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                playerName: playerName
+              });
+            }
+          } else {
+            console.log('[IndexScreen] ⚠️ No valid player name available, skipping game deletion');
+            console.log('[IndexScreen] 💡 This is normal if user hasn\'t set a player name yet');
+          }
+          console.log('[IndexScreen] 🏁 Completed deletePlayer1Games function');
+        };
+        try {
+          console.log('[IndexScreen] 🎯 Screen focused, triggering deletePlayer1Games');
+          deletePlayer1Games();
+        } catch (err) {
+          console.error('[IndexScreen] useFocusEffect error:', err);
+        }
+      }, [playerName, isPlayerLoading])
+    );
+
+    useEffect(() => {
+      console.log('[IndexScreen] useEffect: animation start');
+      try {
+        Animated.timing(cardAnim, {
+          toValue: 1,
+          duration: 800,
+          delay: 300,
+          useNativeDriver: true,
+          easing: Easing.out(Easing.exp),
+        }).start();
+        Animated.timing(welcomeAnim, {
+          toValue: 1,
+          duration: 700,
+          delay: 100,
+          useNativeDriver: true,
+          easing: Easing.out(Easing.exp),
+        }).start();
+      } catch (err) {
+        console.error('[IndexScreen] useEffect: animation error:', err);
+      }
+    }, []);
+
+    const handleCrazy8Press = () => {
+      console.log('[IndexScreen] handleCrazy8Press');
+      router.push(`/GameLobby?gameType=crazy8&gameName=${encodeURIComponent('Crazy 8')}`);
+    };
+
+    const handleTop10Press = () => {
+      console.log('[IndexScreen] handleTop10Press');
+      router.push(`/GameLobby?gameType=top10&gameName=${encodeURIComponent('Top 10')}`);
+    };
+
+    const handleCasinoPress = () => {
+      console.log('[IndexScreen] handleCasinoPress');
+      router.push(`/GameLobby?gameType=casino&gameName=${encodeURIComponent('Casino')}`);
+    };
+
+    const handleShare = async () => {
+      const shareMessage = `🎴 I'm playing Dimpo Plays Cards!\n\nPlay classic South African card games with me.\n\nDownload now and join the fun!`;
+      try {
+        await Share.share({
+          message: shareMessage,
+        });
+      } catch (error) {
+        console.error('[IndexScreen] Error sharing:', error);
       }
     };
-    fetchPlayerName();
-  }, [user?.uid]);
 
-  // Delete games where user is player1 when screen comes into focus
-  useFocusEffect(
-    React.useCallback(() => {
-      const deletePlayer1Games = async () => {
-        console.log('🔄 Starting deletePlayer1Games function');
-        console.log('👤 Current playerName:', playerName);
-        console.log('📊 Player loading state:', { isLoading: isPlayerLoading, playerName });
-        
-        // Wait for player name to finish loading before proceeding
-        if (isPlayerLoading) {
-          console.log('⏳ Player name still loading, waiting...');
-          return;
-        }
-        
-        if (playerName && playerName !== 'Player') {
-          console.log('✅ Player name exists, proceeding with game deletion');
-          try {
-            console.log('🗑️ Calling deleteGamesWherePlayer1 with playerName:', playerName);
-            const result = await deleteGamesWherePlayer1(playerName);
-            console.log('✅ Successfully deleted games where user is player1. Result:', result);
-          } catch (error) {
-            console.error('❌ Error deleting games where user is player1:', error);
-            console.error('🔍 Error details:', {
-              message: error instanceof Error ? error.message : 'Unknown error',
-              stack: error instanceof Error ? error.stack : undefined,
-              playerName: playerName
-            });
-          }
-        } else {
-          console.log('⚠️ No valid player name available, skipping game deletion');
-          console.log('💡 This is normal if user hasn\'t set a player name yet');
-        }
-        
-        console.log('🏁 Completed deletePlayer1Games function');
-      };
-      
-      console.log('🎯 Screen focused, triggering deletePlayer1Games');
-      deletePlayer1Games();
-    }, [playerName, isPlayerLoading])
-  );
+    const handleLogout = async () => {
+      try {
+        console.log('[IndexScreen] handleLogout');
+        await signOut();
+      } catch (error) {
+        console.error('[IndexScreen] Error signing out:', error);
+      }
+    };
 
-  useEffect(() => {
-    Animated.timing(cardAnim, {
-      toValue: 1,
-      duration: 800,
-      delay: 300,
-      useNativeDriver: true,
-      easing: Easing.out(Easing.exp),
-    }).start();
-    Animated.timing(welcomeAnim, {
-      toValue: 1,
-      duration: 700,
-      delay: 100,
-      useNativeDriver: true,
-      easing: Easing.out(Easing.exp),
-    }).start();
-  }, []);
-
-  const handleCrazy8Press = () => {
-    router.push(`/GameLobby?gameType=crazy8&gameName=${encodeURIComponent('Crazy 8')}`);
-  };
-
-  const handleTop10Press = () => {
-    router.push(`/GameLobby?gameType=top10&gameName=${encodeURIComponent('Top 10')}`);
-  };
-
-  const handleCasinoPress = () => {
-    router.push(`/GameLobby?gameType=casino&gameName=${encodeURIComponent('Casino')}`);
-  };
-
-  const handleLogout = async () => {
-    try {
-      await signOut();
-    } catch (error) {
-      console.error('Error signing out:', error);
+    if (isPlayerLoading) {
+      console.log('[IndexScreen] Rendering loading state');
+      return (
+        <ThemedView style={styles.container}>
+          <View style={styles.loadingContainer}>
+            <ThemedText style={styles.loadingText}>Loading...</ThemedText>
+          </View>
+        </ThemedView>
+      );
     }
-  };
 
-  if (isPlayerLoading) {
+    console.log('[IndexScreen] Render end');
+    return (
+      <ThemedView style={[styles.container, { backgroundColor: colors.background }]}> 
+        {/* Gradient Header */}
+        <LinearGradient
+          colors={isDark ? ['#232526', '#414345'] : ['#667eea', '#764ba2']}
+          style={[styles.headerGradient, { paddingTop: insets.top + 24 }]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
+          <View style={styles.headerRow}>
+            <View>
+              <ThemedText style={styles.appName}>Dimpo Plays Cards <ThemedText style={{ fontSize: 20 }}>🤡</ThemedText></ThemedText>
+              <ThemedText style={styles.tagline}>Play classic South African card games</ThemedText>
+            </View>
+            <View style={styles.avatarContainer}>
+              <View style={styles.avatarCircle}>
+                <Image
+                  source={require('@/assets/images/avatars/1.png')}
+                  style={styles.avatarImage}
+                  resizeMode="cover"
+                />
+              </View>
+            </View>
+          </View>
+        </LinearGradient>
+
+        <ScrollView 
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          
+
+          {/* Animated Game Card */}
+          <Animated.View
+            style={{
+              opacity: cardAnim,
+              transform: [
+                { scale: cardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) },
+                { translateY: cardAnim.interpolate({ inputRange: [0, 1], outputRange: [60, 0] }) },
+              ],
+            }}
+          >
+            <View style={styles.buttonContainer}>
+              <TouchableOpacity
+                style={styles.button}
+                onPress={handleCrazy8Press}
+                activeOpacity={0.85}
+              >
+                <LinearGradient
+                  colors={isDark ? ['#4A5568', '#2D3748'] : ['#667eea', '#764ba2']}
+                  style={styles.gradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                >
+                  <View style={styles.buttonContent}>
+                    <ThemedText style={styles.buttonEmoji}>🤡 </ThemedText>
+                    <ThemedText style={styles.buttonTitle}>Crazy 8</ThemedText>
+                    <ThemedText style={styles.buttonSubtitle}>Classic card game</ThemedText>
+                  </View>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.buttonContainer}>
+              <TouchableOpacity
+                style={styles.button}
+                onPress={handleTop10Press}
+                activeOpacity={0.85}
+              >
+                <LinearGradient
+                  colors={isDark ? ['#4A5568', '#2D3748'] : ['#667eea', '#764ba2']}
+                  style={styles.gradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                >
+                  <View style={styles.buttonContent}>
+                    <ThemedText style={styles.buttonEmoji}>♥️</ThemedText>
+                    <ThemedText style={styles.buttonTitle}>Top 10</ThemedText>
+                    <ThemedText style={styles.buttonSubtitle}>Classic card game</ThemedText>
+                  </View>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.buttonContainer}>
+              <TouchableOpacity
+                style={styles.button}
+                onPress={handleCasinoPress}
+                activeOpacity={0.85}
+              >
+                <LinearGradient
+                  colors={isDark ? ['#4A5568', '#2D3748'] : ['#667eea', '#764ba2']}
+                  style={styles.gradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                >
+                  <View style={styles.buttonContent}>
+                    <ThemedText style={styles.buttonEmoji}>♠️</ThemedText>
+                    <ThemedText style={styles.buttonTitle}>Casino</ThemedText>
+                    <ThemedText style={styles.buttonSubtitle}>Classic card game</ThemedText>
+                  </View>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+
+          {/* Dev Buttons at Bottom */}
+          <View style={styles.bottomLogoutContainer}>
+            <TouchableOpacity
+              style={[styles.shareButton, { backgroundColor: colors.primary, marginBottom: 16 }]}
+              onPress={handleShare}
+              activeOpacity={0.8}
+            >
+              <ThemedText style={styles.shareButtonText}>Share This App 🎴</ThemedText>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.bottomLogoutButton}
+              onPress={handleLogout}
+              activeOpacity={0.7}
+            >
+              <ThemedText style={styles.bottomLogoutText}>Logout</ThemedText>
+            </TouchableOpacity>
+          </View>
+
+        </ScrollView>
+      </ThemedView>
+    );
+  } catch (err) {
+    console.error('[IndexScreen] RENDER ERROR:', err);
     return (
       <ThemedView style={styles.container}>
-        
         <View style={styles.loadingContainer}>
-          <ThemedText style={styles.loadingText}>Loading...</ThemedText>
+          <ThemedText style={styles.loadingText}>An error occurred in IndexScreen. Check logs.</ThemedText>
         </View>
       </ThemedView>
     );
   }
-
-  return (
-    <ThemedView style={[styles.container, { backgroundColor: colors.background }]}> 
-      {/* Gradient Header */}
-      <LinearGradient
-        colors={isDark ? ['#232526', '#414345'] : ['#667eea', '#764ba2']}
-        style={[styles.headerGradient, { paddingTop: insets.top + 24 }]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-      >
-        <View style={styles.headerRow}>
-          <View>
-            <ThemedText style={styles.appName}>Dimpo Plays Cards <ThemedText style={{ fontSize: 20 }}>🤡</ThemedText></ThemedText>
-            <ThemedText style={styles.tagline}>Play classic South African card games</ThemedText>
-          </View>
-          <View style={styles.avatarContainer}>
-            <View style={styles.avatarCircle}>
-              <Image
-                source={require('@/assets/images/avatars/1.png')}
-                style={styles.avatarImage}
-                resizeMode="cover"
-              />
-            </View>
-          </View>
-        </View>
-      </LinearGradient>
-
-      <ScrollView 
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        
-
-        {/* Animated Game Card */}
-        <Animated.View
-          style={{
-            opacity: cardAnim,
-            transform: [
-              { scale: cardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) },
-              { translateY: cardAnim.interpolate({ inputRange: [0, 1], outputRange: [60, 0] }) },
-            ],
-          }}
-        >
-          <View style={styles.buttonContainer}>
-            <TouchableOpacity
-              style={styles.button}
-              onPress={handleCrazy8Press}
-              activeOpacity={0.85}
-            >
-              <LinearGradient
-                colors={isDark ? ['#4A5568', '#2D3748'] : ['#667eea', '#764ba2']}
-                style={styles.gradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-              >
-                <View style={styles.buttonContent}>
-                  <ThemedText style={styles.buttonEmoji}>🤡 </ThemedText>
-                  <ThemedText style={styles.buttonTitle}>Crazy 8</ThemedText>
-                  <ThemedText style={styles.buttonSubtitle}>Classic card game</ThemedText>
-                </View>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.buttonContainer}>
-            <TouchableOpacity
-              style={styles.button}
-              onPress={handleTop10Press}
-              activeOpacity={0.85}
-            >
-              <LinearGradient
-                colors={isDark ? ['#4A5568', '#2D3748'] : ['#667eea', '#764ba2']}
-                style={styles.gradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-              >
-                <View style={styles.buttonContent}>
-                  <ThemedText style={styles.buttonEmoji}>♥️</ThemedText>
-                  <ThemedText style={styles.buttonTitle}>Top 10</ThemedText>
-                  <ThemedText style={styles.buttonSubtitle}>Classic card game</ThemedText>
-                </View>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.buttonContainer}>
-            <TouchableOpacity
-              style={styles.button}
-              onPress={handleCasinoPress}
-              activeOpacity={0.85}
-            >
-              <LinearGradient
-                colors={isDark ? ['#4A5568', '#2D3748'] : ['#667eea', '#764ba2']}
-                style={styles.gradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-              >
-                <View style={styles.buttonContent}>
-                  <ThemedText style={styles.buttonEmoji}>♠️</ThemedText>
-                  <ThemedText style={styles.buttonTitle}>Casino</ThemedText>
-                  <ThemedText style={styles.buttonSubtitle}>Classic card game</ThemedText>
-                </View>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
-
-        {/* Dev Buttons at Bottom */}
-        <View style={styles.bottomLogoutContainer}>
-          <TouchableOpacity
-            style={styles.bottomLogoutButton}
-            onPress={handleLogout}
-            activeOpacity={0.7}
-          >
-            <ThemedText style={styles.bottomLogoutText}>Logout</ThemedText>
-          </TouchableOpacity>
-          
-
-        </View>
-
-      </ScrollView>
-    </ThemedView>
-  );
 }
 
 const styles = StyleSheet.create({
@@ -489,5 +530,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#232526',
+  },
+  shareButton: {
+    width: '100%',
+    maxWidth: 320,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+  },
+  shareButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });

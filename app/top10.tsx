@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Image, View, StyleSheet, TouchableOpacity, Dimensions, Alert, ScrollView, findNodeHandle, InteractionManager, Animated as LegacyAnimated, Button, Linking, Modal, ActivityIndicator } from 'react-native';
+import { Image, View, StyleSheet, TouchableOpacity, Dimensions, Alert, ScrollView, findNodeHandle, InteractionManager, Animated as LegacyAnimated, Button, Linking, Modal, ActivityIndicator, Platform } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import ThemedView from './components/ThemedView';
 import ThemedText from './components/ThemedText';
@@ -66,6 +66,9 @@ function getCardTransformations(card: Card, index: number) {
   
   return { rotation, translateX, translateY, scale };
 }
+
+// Helper to check if in development mode
+const isDev = __DEV__ || process.env.NODE_ENV === 'development';
 
 export default function CasinoGameScreen() {
   const { username, isLoading: usernameLoading } = useUsername();
@@ -596,29 +599,71 @@ export default function CasinoGameScreen() {
   }
 
   // Check if game should end and calculate points
-  function checkGameEnd() {
-    // Game ends when stock is empty and at least one player has cards
-    if (game.stock.length === 0 && (game.hands.south.length > 0 || game.hands.north.length > 0)) {
-      const southPoints = calculatePlayerPoints(game.hands.south);
-      const northPoints = calculatePlayerPoints(game.hands.north);
-      
-      setGamePoints({
-        south: southPoints,
-        north: northPoints
-      });
-      
-      setShowPointsModal(true);
-      
-      // Update Firebase to mark game as finished
-      if (currentGameId && isPlayer1 !== null) {
+  function checkGameEnd(finalGameState: GameState) {
+    // Log all relevant info
+    console.log('[checkGameEnd] firebaseGameData.lastMover:', firebaseGameData?.lastMover);
+    if (!firebaseGameData?.lastMover || !['player1', 'player2'].includes(firebaseGameData.lastMover)) {
+      console.log('[checkGameEnd] lastMover not set or invalid, skipping end logic.');
+      return;
+    }
+    // Get hands from firebaseGameData.players for Firestore update
+    const player1Hand = (firebaseGameData?.players?.player1?.hand || []).slice();
+    const player2Hand = (firebaseGameData?.players?.player2?.hand || []).slice();
+    const moverKey = firebaseGameData.lastMover; // 'player1' or 'player2'
+    const discardPile = finalGameState.discard;
+    if (moverKey === 'player1') {
+      player1Hand.push(...discardPile);
+    } else {
+      player2Hand.push(...discardPile);
+    }
+    // For local state/UI, still use south/north mapping for compatibility
+    let hands = { ...finalGameState.hands };
+    if (isPlayer1 !== null) {
+      if (moverKey === 'player1') {
+        hands = {
+          ...hands,
+          [isPlayer1 ? 'south' : 'north']: [...hands[isPlayer1 ? 'south' : 'north'], ...discardPile],
+        };
+      } else {
+        hands = {
+          ...hands,
+          [isPlayer1 ? 'north' : 'south']: [...hands[isPlayer1 ? 'north' : 'south'], ...discardPile],
+        };
+      }
+    }
+    setGame(prev => ({
+      ...prev,
+      hands,
+      discard: [],
+    }));
+    // Calculate points for UI (south/north)
+    const southPoints = calculatePlayerPoints(hands.south);
+    const northPoints = calculatePlayerPoints(hands.north);
+    setGamePoints({
+      south: southPoints,
+      north: northPoints
+    });
+    setShowPointsModal(true);
+    // Wait 5 seconds before updating Firestore to mark game as finished and store points and hands
+    if (currentGameId) {
+      setTimeout(() => {
         const gameDocRef = doc(db, 'games', currentGameId);
+        console.log('[checkGameEnd] Writing finished state to Firestore.');
         updateDoc(gameDocRef, {
           status: 'finished',
           lastUpdated: serverTimestamp(),
+          points: {
+            player1: calculatePlayerPoints(player1Hand),
+            player2: calculatePlayerPoints(player2Hand)
+          },
+          'players.player1.hand': player1Hand,
+          'players.player2.hand': player2Hand,
+        }).then(() => {
+          console.log('[checkGameEnd] Firestore update success');
         }).catch((err: any) => {
           console.error('Error updating game status:', err);
         });
-      }
+      }, 1000);
     }
   }
 
@@ -1040,6 +1085,11 @@ export default function CasinoGameScreen() {
     setDrawnCardIndex(null);
     // Update Firebase with the new game state
     await updateGameInFirebase(newGameState);
+
+    // Only check for game end after turn ends and draw pile is empty
+    if (newGameState.stock.length === 0 && (newGameState.hands.south.length > 0 || newGameState.hands.north.length > 0)) {
+      checkGameEnd(newGameState);
+    }
   }
 
   // Handle opponent card selection
@@ -1133,9 +1183,21 @@ export default function CasinoGameScreen() {
     setDrawnCardIndex(null);
     drawnCardIndexRef.current = null;
     setHasAddedCardsThisTurn(true);
-    setHasDrawnThisTurn(false);
+    setHasDrawnThisTurn(true); // Enable discard pile again after adding cards
     
     await updateGameInFirebase(newGameState);
+    // After successfully moving cards:
+    setLastMover('south');
+    if (currentGameId) {
+      const gameDocRef = doc(db, 'games', currentGameId);
+      const lastMoverValue = isPlayer1 ? 'player1' : 'player2';
+      console.log('[lastMover] Writing lastMover to Firestore:', lastMoverValue);
+      await updateDoc(gameDocRef, { lastMover: lastMoverValue })
+        .then(() => console.log('[lastMover] Firestore update success'))
+        .catch(err => console.error('[lastMover] Firestore update error', err));
+    }else{
+      console.log('[lastMover] No currentGameId');
+    }
   }
 
   // Helper for animation end
@@ -1269,15 +1331,16 @@ export default function CasinoGameScreen() {
     const bothHandsEmpty = game.hands.south.length === 0 && game.hands.north.length === 0;
     const hasCardsInHands = game.hands.south.length > 0 || game.hands.north.length > 0;
     
-    if (
-      gamePhase === 'playing' &&
-      !showPointsModal &&
-      game.stock.length === 0 &&
-      hasCardsInHands &&
-      (firebaseGameData?.status === 'in-progress' || firebaseGameData?.status === 'finished')
-    ) {
-      checkGameEnd();
-    }
+    // Only check for game end in handleEndTurn, not here
+    // if (
+    //   gamePhase === 'playing' &&
+    //   !showPointsModal &&
+    //   game.stock.length === 0 &&
+    //   hasCardsInHands &&
+    //   (firebaseGameData?.status === 'in-progress' || firebaseGameData?.status === 'finished')
+    // ) {
+    //   checkGameEnd(game);
+    // }
   }, [
     game.stock.length,
     gamePhase,
@@ -1301,8 +1364,208 @@ export default function CasinoGameScreen() {
     }
   }, [drawnCardIndex]); // Remove selectedDiscardIndices from dependencies to prevent infinite loop
 
+  // DEV: Set up test state
+  async function setupDevTestState() {
+    // Use 2♠ for both players, and discard pile: 10♣, 8♦, 7♥, 3♠, 6♣, 4♦
+    const testCard = { suit: '♠', value: '2' };
+    const discardPile = [
+      { suit: '♣', value: '10' },
+      { suit: '♦', value: '8' },
+      { suit: '♥', value: '7' },
+      { suit: '♠', value: '3' },
+      { suit: '♣', value: '6' },
+      { suit: '♦', value: '4' },
+    ];
+    // Add some cards to the draw pile (stock)
+    const stock = [
+      { suit: '♠', value: '4' },
+    ];
+    const newGameState: GameState = {
+      hands: {
+        south: [testCard],
+        north: [testCard],
+      },
+      stock,
+      discard: discardPile,
+      turn: 'south',
+      currentSuit: discardPile[discardPile.length - 1].suit,
+      winner: null,
+      chooseSuit: false,
+    };
+    setGame(newGameState);
+    setGamePhase('playing');
+    await updateGameInFirebase(newGameState);
+  }
+
+  // Add at the top of the component, after other refs:
+  const closeModalTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Add cleanup for the timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (closeModalTimeoutRef.current) {
+        clearTimeout(closeModalTimeoutRef.current);
+        console.log('[ModalClose] Cleanup: Cleared timeout on unmount');
+      }
+    };
+  }, []);
+
+  const alreadyNavigatedToResults = useRef(false);
+
+  useEffect(() => {
+    if (!currentGameId) return;
+
+    const gameDoc = doc(db, 'games', currentGameId);
+    const unsub = onSnapshot(gameDoc, (docSnapshot) => {
+      // Check if component is still mounted before updating state
+      if (!isMounted.current) return;
+      
+      if (!docSnapshot.exists()) {
+        // Game was deleted
+        setCancelledGameInfo({
+          cancelledBy: 'Opponent',
+          reason: 'Game was deleted'
+        });
+        setShowGameCancelledPopup(true);
+        return;
+      }
+      
+      if (docSnapshot.exists()) {
+        const gameData = docSnapshot.data();
+        // LOG: Firestore snapshot received
+        console.log('[RESULTS REDIRECT] Firestore snapshot:', {
+          status: gameData.status,
+          points: gameData.points,
+          alreadyNavigated: alreadyNavigatedToResults.current
+        });
+        // ... existing code ...
+        setFirebaseGameData(gameData);
+        // ... existing code ...
+        // NAVIGATE TO RESULTS PAGE FOR BOTH PLAYERS WHEN GAME IS FINISHED
+        if (
+          gameData.status === 'finished' &&
+          gameData.points &&
+          !alreadyNavigatedToResults.current
+        ) {
+          console.log('[RESULTS REDIRECT] Redirect condition met. Navigating to /results...', {
+            status: gameData.status,
+            points: gameData.points
+          });
+          alreadyNavigatedToResults.current = true;
+          const player1Total = gameData.points.player1?.total || 0;
+          const player2Total = gameData.points.player2?.total || 0;
+          const player1Name = gameData.players.player1?.name || 'Player 1';
+          const player2Name = gameData.players.player2?.name || 'Player 2';
+          const player1Breakdown = JSON.stringify(gameData.points.player1?.breakdown || {});
+          const player2Breakdown = JSON.stringify(gameData.points.player2?.breakdown || {});
+          let winner = '';
+          if (player1Total > player2Total) winner = player1Name;
+          else if (player2Total > player1Total) winner = player2Name;
+          router.push({
+            pathname: '/results',
+            params: {
+              player1Total: String(player1Total),
+              player2Total: String(player2Total),
+              player1Name,
+              player2Name,
+              player1Breakdown,
+              player2Breakdown,
+              winner,
+            },
+          });
+        } else {
+          console.log('[RESULTS REDIRECT] Redirect condition NOT met.', {
+            status: gameData.status,
+            points: gameData.points,
+            alreadyNavigated: alreadyNavigatedToResults.current
+          });
+        }
+        // ... existing code ...
+      }
+    });
+    return () => unsub();
+  }, [currentGameId, router]);
+
+  // Add at the top of the component, after other state declarations:
+  const [lastMover, setLastMover] = useState<'south' | 'north' | null>(null);
+
+  // Add a single function to handle moving cards from discard pile (and possibly opponent card) to player's hand
+  async function handleMoveCardsCombo({
+    selectedIndices,
+    includeOpponentCard
+  }: {
+    selectedIndices: number[];
+    includeOpponentCard: boolean;
+  }) {
+    const discardPile = firebaseGameData?.discardPile ?? game.discard;
+    let selectedCards = selectedIndices.map(i => discardPile[i]);
+    let sum = selectedCards.reduce((acc, c) => {
+      const v = c.value === 'A' ? 1 : parseInt(c.value, 10);
+      return isNaN(v) ? acc : acc + v;
+    }, 0);
+    let newHand = [...game.hands.south, ...selectedCards];
+    let newNorthHand = game.hands.north;
+    if (includeOpponentCard && game.hands.north.length > 0) {
+      const opponentCard = game.hands.north[game.hands.north.length - 1];
+      const v = opponentCard.value === 'A' ? 1 : parseInt(opponentCard.value, 10);
+      sum += !isNaN(v) ? v : 0;
+      newHand = [...newHand, opponentCard];
+      newNorthHand = game.hands.north.slice(0, -1);
+    }
+    if (selectedIndices.length > 0 && sum === 10) {
+      const sortedSelectedCards = [...selectedCards].sort((a, b) => {
+        const getValue = (c: Card) => c.value === 'A' ? 1 : parseInt(c.value, 10);
+        return getValue(b) - getValue(a);
+      });
+      setAnimatingCardsDown(sortedSelectedCards);
+      setShowCenterCardDown(true);
+      animateCenterCardDown();
+      const newDiscard = discardPile.filter((_: Card, i: number) => !selectedIndices.includes(i));
+      const newGameState: GameState = {
+        ...game,
+        hands: {
+          ...game.hands,
+          south: newHand,
+          north: newNorthHand,
+        },
+        discard: newDiscard,
+      };
+      setGame(newGameState);
+      setSelectedDiscardIndices([]);
+      setOpponentCardSelected(false);
+      setDrawnCardIndex(null);
+      drawnCardIndexRef.current = null;
+      setHasAddedCardsThisTurn(true);
+      setHasDrawnThisTurn(true);
+      await updateGameInFirebase(newGameState);
+      setLastMover('south');
+      if (currentGameId) {
+        const gameDocRef = doc(db, 'games', currentGameId);
+        const lastMoverValue = isPlayer1 ? 'player1' : 'player2';
+        console.log('[lastMover] Writing lastMover to Firestore:', lastMoverValue);
+        await updateDoc(gameDocRef, { lastMover: lastMoverValue })
+          .then(() => console.log('[lastMover] Firestore update success'))
+          .catch(err => console.error('[lastMover] Firestore update error', err));
+      } else {
+        console.log('[lastMover] No currentGameId');
+      }
+    }
+  }
+
   return (
     <View style={{ flex: 1, position: 'relative' }}>
+      {/* DEV BUTTON: Only show in dev mode */}
+      {isDev && (
+        <View style={{ position: 'absolute', top: 8, left: 8, zIndex: 2000 }}>
+          <TouchableOpacity
+            style={{ backgroundColor: '#FFD700', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 12, elevation: 4 }}
+            onPress={setupDevTestState}
+            activeOpacity={0.8}
+          >
+            <ThemedText style={{ color: '#14532d', fontWeight: 'bold', fontSize: 14 }}>DEV: Test Cards</ThemedText>
+          </TouchableOpacity>
+        </View>
+      )}
 
       
       {/* Animated card at root level for correct absolute positioning */}
@@ -1447,7 +1710,15 @@ export default function CasinoGameScreen() {
                             activeOpacity={canSelectOpponentCard ? 0.7 : 1}
                             onPress={() => {
                               if (canSelectOpponentCard) {
-                                handleOpponentCardSelect();
+                                setOpponentCardSelected(!opponentCardSelected);
+                                setTimeout(async () => {
+                                  if (!opponentCardSelected) { // just selected
+                                    await handleMoveCardsCombo({
+                                      selectedIndices: selectedDiscardIndices,
+                                      includeOpponentCard: true
+                                    });
+                                  }
+                                }, 0);
                               }
                             }}
                           >
@@ -1533,54 +1804,11 @@ export default function CasinoGameScreen() {
                             // Remove duplicates from selection
                             const uniqueSelected = [...new Set(newSelected)];
                             setSelectedDiscardIndices(uniqueSelected);
-                            // Sort by value (A=1, 2-10 as number)
-                            const selectedCards = uniqueSelected.map(i => discardPile[i]);
-                            const sortedSelectedCards = [...selectedCards].sort((a, b) => {
-                              const getValue = (c: Card) => c.value === 'A' ? 1 : parseInt(c.value, 10);
-                              return getValue(b) - getValue(a);
+                            // If opponent card is selected, include it
+                            await handleMoveCardsCombo({
+                              selectedIndices: uniqueSelected,
+                              includeOpponentCard: opponentCardSelected && game.hands.north.length > 0
                             });
-                            let sum = selectedCards.reduce((acc, c) => {
-                              const v = c.value === 'A' ? 1 : parseInt(c.value, 10);
-                              return isNaN(v) ? acc : acc + v;
-                            }, 0);
-                            // If opponent card is selected, add its value
-                            if (opponentCardSelected && game.hands.north.length > 0) {
-                              const opponentCard = game.hands.north[game.hands.north.length - 1];
-                              const v = opponentCard.value === 'A' ? 1 : parseInt(opponentCard.value, 10);
-                              if (!isNaN(v)) sum += v;
-                            }
-                            if (uniqueSelected.length > 0 && sum === 10) {
-                              let newHand = [...game.hands.south, ...sortedSelectedCards];
-                              let newNorthHand = game.hands.north;
-                              // If opponent card is selected, move it too
-                              if (opponentCardSelected && game.hands.north.length > 0) {
-                                const opponentCard = game.hands.north[game.hands.north.length - 1];
-                                newHand = [...newHand, opponentCard];
-                                newNorthHand = game.hands.north.slice(0, -1);
-                              }
-                              setAnimatingCardsDown(sortedSelectedCards);
-                              setShowCenterCardDown(true);
-                              animateCenterCardDown();
-                              const newDiscard = discardPile.filter((_: Card, i: number) => !uniqueSelected.includes(i));
-                              const newGameState: GameState = {
-                                ...game,
-                                hands: {
-                                  ...game.hands,
-                                  south: newHand,
-                                  north: newNorthHand,
-                                },
-                                discard: newDiscard,
-                              };
-                              setGame(newGameState);
-                              setSelectedDiscardIndices([]);
-                              setOpponentCardSelected(false);
-                              // Clear drawn card tracking when cards are successfully moved
-                              setDrawnCardIndex(null);
-                              drawnCardIndexRef.current = null;
-                              setHasAddedCardsThisTurn(true); // Mark that player has added cards this turn
-                              setHasDrawnThisTurn(false); // Allow user to draw again after adding cards
-                              await updateGameInFirebase(newGameState);
-                            }
                           }}
                         >
                           <CasinoCard suit={card.suit} value={card.value} style={{ width: 64, height: 90 }} />
@@ -1669,25 +1897,6 @@ export default function CasinoGameScreen() {
                     activeOpacity={0.8}
                   >
                     <ThemedText style={styles.endTurnButtonText}>End Turn</ThemedText>
-                  </TouchableOpacity>
-                </View>
-              )}
-              
-              {/* Move Selected Cards button - only show when player has added cards and can select opponent card */}
-              {game.turn === 'south' && hasAddedCardsThisTurn && game.hands.north.length > 0 && (
-                <View style={styles.moveCardsButtonContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.moveCardsButton,
-                      { opacity: opponentCardSelected ? 1 : 0.6 }
-                    ]}
-                    onPress={handleMoveSelectedCards}
-                    disabled={!opponentCardSelected}
-                    activeOpacity={0.8}
-                  >
-                    <ThemedText style={styles.moveCardsButtonText}>
-                      Move Cards ({selectedDiscardIndices.length + (opponentCardSelected ? 1 : 0)})
-                    </ThemedText>
                   </TouchableOpacity>
                 </View>
               )}
@@ -1873,116 +2082,6 @@ export default function CasinoGameScreen() {
             </TouchableOpacity>
           </View>
         </View>
-      </Modal>
-
-      {/* Game Points Modal */}
-      <Modal
-        visible={showPointsModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowPointsModal(false)}
-      >
-        <BlurView intensity={60} tint="dark" style={StyleSheet.absoluteFill}>
-          <View style={styles.modalOverlayCentered}>
-            <View style={styles.nicePointsModalContent}>
-              {/* Close button */}
-              <TouchableOpacity
-                style={styles.closeButton}
-                onPress={() => {
-                  setShowPointsModal(false);
-                  setGamePoints(null);
-                  // Add a small delay to ensure modal closes properly before navigation
-                  setTimeout(() => {
-                    if (isMounted.current) {
-                      router.push('/');
-                    }
-                  }, 100);
-                }}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="close" size={28} color="#fff" />
-              </TouchableOpacity>
-              {/* Gradient header with trophy */}
-              <LinearGradient
-                colors={["#FFD700", "#FFB300", "#FF9800"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.modalHeaderGradient}
-              >
-                <MaterialIcons name="emoji-events" size={32} color="#fff" style={{ marginRight: 8 }} />
-                <ThemedText style={styles.niceModalTitle}>Game Results</ThemedText>
-              </LinearGradient>
-              <ScrollView style={styles.pointsScrollView} showsVerticalScrollIndicator={false}>
-                <View style={styles.modalBody}>
-                  {gamePoints && (
-                    <>
-                      {/* South Player (You) */}
-                      <View style={styles.playerPointsContainer}>
-                        <ThemedText style={styles.playerName}>{playerNames.south}</ThemedText>
-                        <ThemedText style={styles.totalPoints}>Total: {gamePoints.south.total} points</ThemedText>
-                        <View style={styles.pointsBreakdown}>
-                          {Object.entries(gamePoints.south.breakdown).map(([reason, points]) => (
-                            <View key={reason} style={styles.pointsRow}>
-                              <ThemedText style={styles.pointsReason}>{reason}</ThemedText>
-                              <ThemedText style={styles.pointsValue}>+{points}</ThemedText>
-                            </View>
-                          ))}
-                          {Object.keys(gamePoints.south.breakdown).length === 0 && (
-                            <ThemedText style={styles.noPointsText}>No point cards</ThemedText>
-                          )}
-                        </View>
-                      </View>
-
-                      {/* North Player (Opponent) */}
-                      <View style={styles.playerPointsContainer}>
-                        <ThemedText style={styles.playerName}>{playerNames.north}</ThemedText>
-                        <ThemedText style={styles.totalPoints}>Total: {gamePoints.north.total} points</ThemedText>
-                        <View style={styles.pointsBreakdown}>
-                          {Object.entries(gamePoints.north.breakdown).map(([reason, points]) => (
-                            <View key={reason} style={styles.pointsRow}>
-                              <ThemedText style={styles.pointsReason}>{reason}</ThemedText>
-                              <ThemedText style={styles.pointsValue}>+{points}</ThemedText>
-                            </View>
-                          ))}
-                          {Object.keys(gamePoints.north.breakdown).length === 0 && (
-                            <ThemedText style={styles.noPointsText}>No point cards</ThemedText>
-                          )}
-                        </View>
-                      </View>
-
-                      {/* Winner */}
-                      <View style={styles.niceWinnerContainer}>
-                        <ThemedText style={styles.niceWinnerText}>
-                          {gamePoints.south.total > gamePoints.north.total 
-                            ? `🎉 ${playerNames.south} wins!` 
-                            : gamePoints.north.total > gamePoints.south.total 
-                            ? `🎉 ${playerNames.north} wins!` 
-                            : "🤝 It's a tie!"}
-                        </ThemedText>
-                      </View>
-                    </>
-                  )}
-                </View>
-              </ScrollView>
-              <TouchableOpacity
-                style={styles.niceModalButton}
-                onPress={() => {
-                  setShowPointsModal(false);
-                  setGamePoints(null);
-                  // Add a small delay to ensure modal closes properly before navigation
-                  setTimeout(() => {
-                    if (isMounted.current) {
-                      router.push('/');
-                    }
-                  }, 100);
-                }}
-                activeOpacity={0.8}
-              >
-                <ThemedText style={styles.niceModalButtonText}>Back to Menu</ThemedText>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </BlurView>
       </Modal>
 
       {/* Center card from middle to down (for draw animation) */}

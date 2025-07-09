@@ -106,13 +106,15 @@ export async function deleteGamesWherePlayer1(userName: string): Promise<void> {
       .filter(doc => {
         const gameData = doc.data();
         const player1Name = gameData.players?.player1?.name;
-        return player1Name === userName;
+        const status = gameData.status;
+        // Only delete if player1 matches and status is NOT 'finished'
+        return player1Name === userName && status !== 'finished';
       })
       .map(doc => deleteDoc(doc.ref));
     
     if (deletePromises.length > 0) {
       await Promise.all(deletePromises);
-      console.log(`[GamesService] Deleted ${deletePromises.length} games where user is player1`);
+      console.log(`[GamesService] Deleted ${deletePromises.length} games where user is player1 and not finished`);
     }
   } catch (error) {
     console.error('[GamesService] Error deleting games where user is player1:', error);

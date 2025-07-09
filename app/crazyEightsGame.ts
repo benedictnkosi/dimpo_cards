@@ -49,16 +49,13 @@ export function initGame(): GameState {
 }
 
 export function canPlay(card: Card, top: Card, currentSuit: string): boolean {
-  console.log('[canPlay] Checking if card can be played:', { card, top, currentSuit });
   
   // If no top card (empty discard pile), any card can be played
   if (!top) {
-    console.log('[canPlay] No top card, allowing play');
     return true;
   }
   
   // Allow any card to be played (simplified rules for now)
-  console.log('[canPlay] Allowing play (simplified rules)');
   return true;
 }
 

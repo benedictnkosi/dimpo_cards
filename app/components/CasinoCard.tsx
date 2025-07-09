@@ -25,6 +25,19 @@ const SUIT_COLORS: Record<string, string> = {
 export default function CasinoCard({ suit, value, style = {} }: CasinoCardProps) {
   const symbol = SUIT_SYMBOLS[suit] || suit;
   const color = SUIT_COLORS[suit] || '#222';
+  const flattenStyle = StyleSheet.flatten(style) || {};
+  
+  const isSmall = (flattenStyle.width ?? 56) < 64;
+  if (isSmall) {
+    return (
+      <View style={[styles.card, styles.cardSmall, style]}>
+        <View style={styles.centerSuitSmall}>
+          <ThemedText style={styles.cornerTextSmall}>{value}</ThemedText>
+          <ThemedText style={[styles.centerSuitTextSmall, { color }]}>{symbol}</ThemedText>
+        </View>
+      </View>
+    );
+  }
   return (
     <View style={[styles.card, style]}>
       {/* Top left corner */}
@@ -63,6 +76,12 @@ const styles = StyleSheet.create({
     borderColor: '#e5e7eb',
     position: 'relative',
   },
+  cardSmall: {
+    width: 32,
+    height: 44,
+    borderRadius: 6,
+    marginHorizontal: 2,
+  },
   topLeft: {
     position: 'absolute',
     top: 4,
@@ -95,8 +114,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  centerSuitSmall: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   centerSuitText: {
     fontSize: 32,
     fontWeight: 'bold',
+  },
+  centerSuitTextSmall: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  cornerTextSmall: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#222',
+    lineHeight: 12,
+    marginBottom: 0,
   },
 }); 

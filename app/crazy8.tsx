@@ -23,6 +23,7 @@ import Animated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS } from 
 import { router, useLocalSearchParams } from 'expo-router';
 import { getPlayer } from '@/services/playersService';
 import { useAuth } from '@/contexts/AuthContext';
+import WalkieTalkie from './components/ui/WalkieTalkie';
 
 const { width, height } = Dimensions.get('window');
 
@@ -843,6 +844,40 @@ export default function CasinoGameScreen() {
 
   const [showMenu, setShowMenu] = useState(false);
 
+  // Add state for walkie talkie
+  const [walkieAudioUrl, setWalkieAudioUrl] = useState<string | null>(null);
+  const [lastWalkieSender, setLastWalkieSender] = useState<string | null>(null);
+
+  // Listen for walkie talkie audio URL changes in Firebase
+  useEffect(() => {
+    if (!currentGameId) return;
+    const gameDoc = doc(db, 'games', currentGameId);
+    const unsub = onSnapshot(gameDoc, (docSnapshot) => {
+      const gameData = docSnapshot.data();
+      if (gameData?.walkieAudioUrl && gameData.walkieSender !== user?.uid) {
+        setWalkieAudioUrl(gameData.walkieAudioUrl);
+        setLastWalkieSender(gameData.walkieSender);
+      }
+    });
+    return () => unsub();
+  }, [currentGameId, user?.uid]);
+
+  // After playing, clear the audio URL in Firebase
+  const handleWalkieAudioPlayed = async () => {
+    if (!currentGameId) return;
+    const gameDocRef = doc(db, 'games', currentGameId);
+    await updateDoc(gameDocRef, { walkieAudioUrl: null, walkieSender: null });
+    setWalkieAudioUrl(null);
+    setLastWalkieSender(null);
+  };
+
+  // When sending audio, update Firebase with the audio URL and sender
+  const handleWalkieAudioSent = async (url: string) => {
+    if (!currentGameId || !user?.uid) return;
+    const gameDocRef = doc(db, 'games', currentGameId);
+    await updateDoc(gameDocRef, { walkieAudioUrl: url, walkieSender: user.uid });
+  };
+
   if (isLoading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#14532d' }}>
@@ -976,15 +1011,17 @@ export default function CasinoGameScreen() {
                 )}
                 
                 {/* Permanent facedown card at animation start position */}
-                <View style={{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }, { translateY: 0 }], zIndex: 50, alignItems: 'center' }}>
-                  <TouchableOpacity
-                    onPress={() => handleDraw('south')}
-                    style={{ marginBottom: 8 }}
-                  >
-                    {getCardBack()}
-                  </TouchableOpacity>
-                  <ThemedText style={styles.drawHintText}>Tap to Draw</ThemedText>
-                </View>
+                {game.hands.south.length === 0 && (
+                  <View style={{ position: 'absolute', top: '45%', left: '50%', transform: [{ translateX: -28 }, { translateY: 0 }], zIndex: 50, alignItems: 'center' }}>
+                    <TouchableOpacity
+                      onPress={() => handleDraw('south')}
+                      style={{ marginBottom: 8 }}
+                    >
+                      {getCardBack()}
+                    </TouchableOpacity>
+                    <ThemedText style={styles.drawHintText}>Tap to Draw</ThemedText>
+                  </View>
+                )}
                 {/* Center card from middle to down (for draw animation) */}
                 {showCenterCardDown && (
                   <Animated.View
@@ -1282,6 +1319,17 @@ export default function CasinoGameScreen() {
           </View>
         </View>
       </Modal>
+      {gamePhase === 'playing' && (
+        <View style={{ position: 'absolute', bottom: 140, left: 0, right: 0, alignItems: 'center', zIndex: 100 }}>
+          <WalkieTalkie
+            userId={user?.uid || 'unknown'}
+            opponentId={isPlayer1 ? (firebaseGameData?.players?.player2?.uid || 'opponent') : (firebaseGameData?.players?.player1?.uid || 'opponent')}
+            onAudioSent={handleWalkieAudioSent}
+            incomingAudioUrl={walkieAudioUrl}
+            onAudioPlayed={handleWalkieAudioPlayed}
+          />
+        </View>
+      )}
     </View>
   );
 }

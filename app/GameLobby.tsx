@@ -458,10 +458,13 @@ export default function GameLobby() {
             {waitingGames
               .filter(game => {
                 // Prefer filtering by UID if available, fallback to username
-                if (game.players?.player1?.uid && user?.uid) {
-                  return game.players.player1.uid !== user.uid;
-                }
-                return game.players?.player1?.name !== localUsername;
+                const notOwnGame = game.players?.player1?.uid && user?.uid
+                  ? game.players.player1.uid !== user.uid
+                  : game.players?.player1?.name !== localUsername;
+                // Filter by gameType and gameDisplayName
+                const matchesType = game.gameType === gameType;
+                const matchesName = game.gameDisplayName === decodedGameName;
+                return notOwnGame && matchesType && matchesName;
               })
               .map(game => {
                 const createdAt = game.createdAt?.toDate ? game.createdAt.toDate() : new Date();

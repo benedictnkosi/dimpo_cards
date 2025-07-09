@@ -87,5 +87,7 @@
     <string>Automatic</string>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <false/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>This app needs access to your microphone so you can send voice messages to your opponent during the game.</string>
   </dict>
 </plist>

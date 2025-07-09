@@ -95,6 +95,7 @@ export default function CasinoGameScreen() {
   const [isPlayer1, setIsPlayer1] = useState<boolean | null>(null);
   const [opponentLastPlayedCard, setOpponentLastPlayedCard] = useState<Card | null>(null);
   const [previousDiscardCard, setPreviousDiscardCard] = useState<Card | null>(null);
+  const [round, setRound] = useState(1); // <-- Add round state
   const handCardRefs = useRef<(View | null)[]>([]);
   const discardRef = useRef<View | null>(null);
   // Box animation (like the test page)
@@ -207,6 +208,12 @@ export default function CasinoGameScreen() {
       if (docSnapshot.exists()) {
         const gameData = docSnapshot.data();
         setFirebaseGameData(gameData);
+        // --- ROUND SYNC ---
+        if (typeof gameData.round === 'number') {
+          setRound(gameData.round);
+        } else {
+          setRound(1);
+        }
         
         // Check for game cancellation
         if (gameData.status === 'cancelled' || gameData.status === 'deleted') {
@@ -532,7 +539,7 @@ export default function CasinoGameScreen() {
     }
   }
 
-  // Handle Deal button
+  // Handle Deal button (for round 1)
   async function handleDeal() {
     try {
       // Filter out J, Q, K, and Joker cards
@@ -634,14 +641,90 @@ export default function CasinoGameScreen() {
       }
     }
     dealNext();
+    // --- Set round to 1 in Firestore ---
+    if (currentGameId) {
+      const gameDocRef = doc(db, 'games', currentGameId);
+      await updateDoc(gameDocRef, { round: 1 });
+    }
+    setRound(1);
     } catch (err) {
       // Reset to init phase on error
       setGamePhase('init');
     }
   }
 
+  // Handle Deal for Round 2
+  async function handleDealRound2() {
+    if (!currentGameId) return;
+    // Use the remaining stock in Firebase (firebaseGameData.pile)
+    const stock = (firebaseGameData?.pile || []).slice();
+    let north: Card[] = [];
+    let south: Card[] = [];
+    // Deal 10 cards to each player (or as many as possible)
+    for (let i = 0; i < CARDS_PER_PLAYER && stock.length > 0; i++) {
+      north.push(stock.shift());
+    }
+    for (let i = 0; i < CARDS_PER_PLAYER && stock.length > 0; i++) {
+      south.push(stock.shift());
+    }
+    // Start discard pile with a non-8 card
+    let discard: Card[] = [];
+    let top: Card | undefined;
+    while (stock.length) {
+      top = stock.shift();
+      if (top && top.value !== '8') {
+        discard = [top];
+        break;
+      } else if (top) {
+        stock.push(top);
+      }
+    }
+    if (discard.length === 0 && stock.length > 0) {
+      top = stock.shift();
+      if (top) discard = [top];
+    }
+    if (discard.length === 0) {
+      discard = [{ suit: '♠', value: 'A' }];
+    }
+    // Update Firestore and local state
+    const newGameState: GameState = {
+      hands: { north, south },
+      stock,
+      discard,
+      turn: 'south',
+      currentSuit: discard[0].suit,
+      winner: null,
+      chooseSuit: false,
+    };
+    setGame(newGameState);
+    setGamePhase('playing');
+    setRound(2);
+    // Update Firestore
+    const gameDocRef = doc(db, 'games', currentGameId);
+    await updateDoc(gameDocRef, {
+      'players.player1.hand': isPlayer1 ? south : north,
+      'players.player2.hand': isPlayer1 ? north : south,
+      pile: stock,
+      discardPile: discard,
+      currentCard: discard[0],
+      turn: 'player1',
+      round: 2,
+      status: 'in-progress',
+      lastUpdated: serverTimestamp(),
+    });
+  }
+
   // Handle play for either player (with animation for south)
   async function handlePlay(player: Player, idx: number) {
+    // Prevent play if player is south, has a temp deck, and round is 1
+    if (player === 'south' && round === 1) {
+      const playerKey = isPlayer1 ? 'player1' : 'player2';
+      const tempDeck = firebaseGameData?.players?.[playerKey]?.tempDeck || [];
+      if (tempDeck.length > 0) {
+        Alert.alert('Invalid move', 'According to the rules, the move is invalid');
+        return;
+      }
+    }
     console.log('[handlePlay] START - player:', player, 'idx:', idx, 'gamePhase:', gamePhase, 'winner:', game.winner, 'chooseSuit:', game.chooseSuit);
     console.log('[handlePlay] Current game state:', {
       hands: { south: game.hands.south.length, north: game.hands.north.length },
@@ -1309,7 +1392,13 @@ export default function CasinoGameScreen() {
       winner: game.winner,
       chooseSuit: game.chooseSuit
     });
-    
+    // Prevent play if player has a temp deck and round is 1
+    const playerKey = isPlayer1 ? 'player1' : 'player2';
+    const tempDeck = firebaseGameData?.players?.[playerKey]?.tempDeck || [];
+    if (round === 1 && tempDeck.length > 0) {
+      Alert.alert('Finish Temp Deck', 'You must finish your temp deck before playing to the discard pile.');
+      return;
+    }
     if (selectedHandCards.length > 0 && gamePhase === 'playing') {
       const firstSelectedIndex = selectedHandCards[0];
       console.log('[handleDiscardPileClick] Calling handlePlay with south player and index:', firstSelectedIndex);
@@ -1365,6 +1454,14 @@ export default function CasinoGameScreen() {
                   </View>
                 )
               ) : null}
+              {/* --- ROUND 2 BUTTON --- */}
+              {round === 1 && isPlayer1 && firebaseGameData?.status === 'in-progress' &&
+                firebaseGameData?.players?.player1?.hand?.length === 0 &&
+                firebaseGameData?.players?.player2?.hand?.length === 0 && (
+                  <TouchableOpacity style={styles.dealBtn} onPress={handleDealRound2}>
+                    <ThemedText style={styles.dealBtnText}>Deal Round 2</ThemedText>
+                  </TouchableOpacity>
+              )}
             </View>
           )}
           {/* DEALING PHASE: Animate cards being dealt */}
