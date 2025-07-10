@@ -57,12 +57,66 @@ function shuffle(deck: Card[]): Card[] {
   return arr;
 }
 
-// Update DeckPlaceholder to accept props for size and text
-function DeckPlaceholder({ text = 'Deck Empty', style = {} }) {
+// Update DeckPlaceholder to accept props for size, text, and cards
+function DeckPlaceholder({ text = 'Deck Empty', style = {}, cards = [] }: { text?: string; style?: any; cards?: Card[] }) {
   return (
     <View style={[styles.deckPlaceholderSingle, style]}>
-      <View style={styles.deckPlaceholderCard} />
-      <ThemedText style={styles.deckPlaceholderText}>{text}</ThemedText>
+      {cards.length > 0 ? (
+        // Show actual deck cards as a stacked pile
+        <View style={{ position: 'relative', alignItems: 'center' }}>
+          {cards.slice(0, 5).map((card, idx) => (
+            <View
+              key={`deck-card-${idx}`}
+              style={{
+                position: 'absolute',
+                left: idx * 2, // Small horizontal spill
+                top: idx * 1,  // Small vertical spill
+                zIndex: idx,
+                transform: [{ rotate: `${(idx - 2) * 2}deg` }], // Slight rotation for natural look
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.1,
+                shadowRadius: 3,
+                elevation: idx,
+              }}
+            >
+              <CasinoCard 
+                suit={card.suit} 
+                value={card.value} 
+                style={{ width: 48, height: 68 }}
+              />
+            </View>
+          ))}
+          {cards.length > 5 && (
+            <View style={{
+              position: 'absolute',
+              left: 5 * 2 + 4,
+              top: 5 * 1 + 2,
+              zIndex: 5,
+              backgroundColor: 'rgba(0, 0, 0, 0.8)',
+              borderRadius: 10,
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderWidth: 1,
+              borderColor: 'rgba(255, 255, 255, 0.3)',
+            }}>
+              <ThemedText style={{
+                color: '#fff',
+                fontSize: 11,
+                fontWeight: 'bold',
+              }}>
+                +{cards.length - 5}
+              </ThemedText>
+            </View>
+          )}
+        </View>
+      ) : (
+        // Show empty placeholder
+        <View style={styles.deckPlaceholderCard} />
+      )}
+      <ThemedText style={styles.deckPlaceholderText}>
+        {cards.length > 0 ? `Deck (${cards.length})` : text}
+      </ThemedText>
     </View>
   );
 }
@@ -98,6 +152,8 @@ export default function CasinoGameScreen() {
   const [round, setRound] = useState(1); // <-- Add round state
   const handCardRefs = useRef<(View | null)[]>([]);
   const discardRef = useRef<View | null>(null);
+  // Track hand size at the start of each turn
+  const [handSizeAtTurnStart, setHandSizeAtTurnStart] = useState<number>(0);
   // Box animation (like the test page)
   const boxOffset = useSharedValue(0);
   const boxAnimatedStyle = useAnimatedStyle(() => ({
@@ -113,9 +169,13 @@ export default function CasinoGameScreen() {
   // Track previous discard card when discard pile changes (for opponent plays)
   const lastDiscardRef = useRef<Card | null>(null);
   const prevOpponentHandLength = useRef<number>(0);
+  const prevTurn = useRef<Player | null>(null);
+  const prevDiscardLength = useRef<number>(0);
+  const prevOpponentTempDeckLength = useRef<number>(0);
+  const prevDiscardPile = useRef<Card[]>([]);
+  const prevOpponentDeckLength = useRef<number>(0);
 
   const [localTopCard, setLocalTopCard] = useState<Card | null>(null);
-  const prevDiscardLength = useRef<number>(0);
   const [opponentPhoneNumber, setOpponentPhoneNumber] = useState<string | null>(null);
   const [showGameCancelledPopup, setShowGameCancelledPopup] = useState(false);
   const [cancelledGameInfo, setCancelledGameInfo] = useState<{cancelledBy: string, reason: string} | null>(null);
@@ -300,19 +360,23 @@ export default function CasinoGameScreen() {
             north: isP1 ? (gameData.players.player2?.name || 'Player 2') : (gameData.players.player1?.name || username),
           });
           
-          // Detect opponent draw: if opponent's hand increases in length
-          const prevLen = prevOpponentHandLength.current;
-          const currLen = northHand.length;
-          if (currLen > prevLen) {
-            setShowCenterCardUp(true);
-            animateCenterCardUp();
-          }
-          prevOpponentHandLength.current = currLen;
+          // Update previous length for next comparison
+          prevOpponentHandLength.current = northHand.length;
           
           // Clear syncing flag after a short delay
           setTimeout(() => {
             isSyncingToFirebase.current = false;
           }, 200);
+          
+          // Update hand size at turn start when it becomes our turn
+          if (newGameState.turn === 'south' && game.turn !== 'south') {
+            console.log('[FIREBASE SYNC] Setting hand size at turn start:', {
+              oldTurn: game.turn,
+              newTurn: newGameState.turn,
+              handSize: newGameState.hands.south.length
+            });
+            setHandSizeAtTurnStart(newGameState.hands.south.length);
+          }
           
           // Fetch opponent's phone number
           fetchOpponentPhoneNumber();
@@ -492,7 +556,7 @@ export default function CasinoGameScreen() {
   }
 
   // Update game state in Firebase
-  async function updateGameInFirebase(gameState: GameState, lastCardPlayed?: Card) {
+  async function updateGameInFirebase(gameState: GameState, lastCardPlayed?: Card, actionType?: string) {
     if (!currentGameId || isPlayer1 === null) {
       return;
     }
@@ -534,6 +598,16 @@ export default function CasinoGameScreen() {
         updateData[`players.${playerKey}.lastCardPlayed`] = lastCardPlayed;
       }
       
+      // Add lastAction tracking
+      if (actionType) {
+        const playerKey = isPlayer1 ? 'player1' : 'player2';
+        updateData.lastAction = {
+          player: playerKey,
+          action: actionType,
+          timestamp: serverTimestamp(),
+        };
+      }
+      
       await updateDoc(gameDocRef, updateData);
     } catch (err) {
     }
@@ -570,7 +644,7 @@ export default function CasinoGameScreen() {
           setDealtStock(stock.slice());
           i++;
           dealNext();
-        }, 300);
+        }, 150); // Reduced from 300ms to 150ms
       } else if (i < CARDS_PER_PLAYER * 2) {
         setTimeout(() => {
           south = [...south, stock.shift()!]; // Add card to south player's array
@@ -578,66 +652,69 @@ export default function CasinoGameScreen() {
           setDealtStock(stock.slice());
           i++;
           dealNext();
-        }, 300);
+        }, 150); // Reduced from 300ms to 150ms
       } else {
-        // After dealing, set up the rest of the game
-        setTimeout(async () => {
-          // Start discard pile with a non-8 card
-          let discard: Card[] = [];
-          let top: Card | undefined;
-          while (stock.length) {
-            top = stock.shift();
-            if (top && top.value !== '8') {
-              discard = [top];
-              break;
-            } else if (top) {
-              stock.push(top);
-            }
-          }
-          
-          // If we couldn't find a non-8 card, use the first card (even if it's an 8)
-          if (discard.length === 0 && stock.length > 0) {
-            top = stock.shift();
-            if (top) {
-              discard = [top];
-            }
-          }
-          
-          // If still no card, create a default card (this shouldn't happen with a full deck)
-          if (discard.length === 0) {
-            discard = [{ suit: '♠', value: 'A' }];
-          }
-          setDealtDiscard(discard);
-          setDealtStock(stock.slice());
+                  // After dealing, set up the rest of the game
           setTimeout(async () => {
-            const newGameState: GameState = {
-              hands: { north, south },
-              stock,
-              discard,
-              turn: 'south' as Player,
-              currentSuit: discard[0].suit,
-              winner: null,
-              chooseSuit: false,
-            };
-            setGame(newGameState);
-            setGamePhase('playing');
-            // Update Firebase with the new game state including empty deck arrays
-            await updateGameInFirebase(newGameState);
-            
-            // Also update the player deck arrays in Firebase
-            if (currentGameId) {
-              const gameDocRef = doc(db, 'games', currentGameId);
-              await updateDoc(gameDocRef, {
-                'players.player1.deck': player1Deck,
-                'players.player2.deck': player2Deck,
-                'players.player1.tempDeck': [],
-                'players.player2.tempDeck': [],
-                'players.player1.tempDeckSum': 0,
-                'players.player2.tempDeckSum': 0,
-              });
+            // Start discard pile with a non-8 card
+            let discard: Card[] = [];
+            let top: Card | undefined;
+            while (stock.length) {
+              top = stock.shift();
+              if (top && top.value !== '8') {
+                discard = [top];
+                break;
+              } else if (top) {
+                stock.push(top);
+              }
             }
-          }, 400);
-        }, 400);
+            
+            // If we couldn't find a non-8 card, use the first card (even if it's an 8)
+            if (discard.length === 0 && stock.length > 0) {
+              top = stock.shift();
+              if (top) {
+                discard = [top];
+              }
+            }
+            
+            // If still no card, create a default card (this shouldn't happen with a full deck)
+            if (discard.length === 0) {
+              discard = [{ suit: '♠', value: 'A' }];
+            }
+            setDealtDiscard(discard);
+            setDealtStock(stock.slice());
+            setTimeout(async () => {
+              const newGameState: GameState = {
+                hands: { north, south },
+                stock,
+                discard,
+                turn: 'south' as Player,
+                currentSuit: discard[0].suit,
+                winner: null,
+                chooseSuit: false,
+              };
+              setGame(newGameState);
+              setGamePhase('playing');
+              // Update Firebase with the new game state including empty deck arrays
+              await updateGameInFirebase(newGameState, undefined, 'deal');
+              
+              // Also update the player deck arrays in Firebase
+              if (currentGameId) {
+                const gameDocRef = doc(db, 'games', currentGameId);
+                await updateDoc(gameDocRef, {
+                  'players.player1.deck': player1Deck,
+                  'players.player2.deck': player2Deck,
+                  'players.player1.tempDeck': [],
+                  'players.player2.tempDeck': [],
+                  'players.player1.tempDeckSum': 0,
+                  'players.player2.tempDeckSum': 0,
+                });
+              }
+              
+              // Set initial hand size for the first turn
+              setHandSizeAtTurnStart(south.length);
+            }, 200); // Reduced from 400ms to 200ms
+          }, 200); // Reduced from 400ms to 200ms
       }
     }
     dealNext();
@@ -699,6 +776,8 @@ export default function CasinoGameScreen() {
     setGame(newGameState);
     setGamePhase('playing');
     setRound(2);
+    // Set hand size for round 2
+    setHandSizeAtTurnStart(south.length);
     // Update Firestore
     const gameDocRef = doc(db, 'games', currentGameId);
     await updateDoc(gameDocRef, {
@@ -711,6 +790,11 @@ export default function CasinoGameScreen() {
       round: 2,
       status: 'in-progress',
       lastUpdated: serverTimestamp(),
+      lastAction: {
+        player: isPlayer1 ? 'player1' : 'player2',
+        action: 'deal_round2',
+        timestamp: serverTimestamp(),
+      },
     });
   }
 
@@ -929,6 +1013,10 @@ export default function CasinoGameScreen() {
         currentSuit: newGame.currentSuit,
         winner: newGame.winner
       });
+      
+      // Keep the turn with the current player instead of switching
+      newGame.turn = player;
+      console.log('[patchPlayAndPreserveTempDecks] Turn kept with current player:', player);
     } catch (err) {
       console.log('[patchPlayAndPreserveTempDecks] playCard threw error:', err);
       console.log('[patchPlayAndPreserveTempDecks] playCard error stack:', err instanceof Error ? err.stack : 'No stack trace');
@@ -947,9 +1035,14 @@ export default function CasinoGameScreen() {
         discardPile: newGame.discard,
         currentCard: newGame.discard.length > 0 ? newGame.discard[newGame.discard.length - 1] : null,
         pile: newGame.stock,
-        turn: newGame.turn === 'south' ? (isPlayer1 ? 'player1' : 'player2') : (isPlayer1 ? 'player2' : 'player1'),
+        turn: playerKey, // Keep turn with the current player
         status: newGame.winner ? 'finished' : 'in-progress',
         lastUpdated: serverTimestamp(),
+        lastAction: {
+          player: playerKey,
+          action: 'play',
+          timestamp: serverTimestamp(),
+        },
       };
       
       console.log('[patchPlayAndPreserveTempDecks] Update data prepared:', {
@@ -996,9 +1089,7 @@ export default function CasinoGameScreen() {
     const newGameState = drawCard(game, player);
     setGame(newGameState);
     // Immediately update Firebase with the new game state
-    await updateGameInFirebase(newGameState);
-    setShowCenterCardDown(true);
-    animateCenterCardDown();
+    await updateGameInFirebase(newGameState, undefined, 'draw');
   }
 
   // Handle undoing a play by moving top card from discard pile to player's hand
@@ -1027,7 +1118,7 @@ export default function CasinoGameScreen() {
     
     setGame(newGameState);
     // Update Firebase with the new game state
-    await updateGameInFirebase(newGameState);
+    await updateGameInFirebase(newGameState, undefined, 'undo');
   }
 
   // Removed onPlayerCardAnimationEnd function - no longer needed
@@ -1037,80 +1128,157 @@ export default function CasinoGameScreen() {
     handCardRefs.current.length = game.hands.south.length;
   }
 
-  // Center card from middle to down (for draw animation)
-  const [showCenterCardDown, setShowCenterCardDown] = useState(false);
-  const centerCardDownY = useSharedValue(0);
+  // Animation for cards moving from discard pile to temp deck
+  const [showDiscardToTempDeckAnimation, setShowDiscardToTempDeckAnimation] = useState(false);
+  const [animatingCardsToTempDeck, setAnimatingCardsToTempDeck] = useState<Card[]>([]);
+  const discardToTempDeckX = useSharedValue(0);
+  const discardToTempDeckY = useSharedValue(0);
+  const discardToTempDeckScale = useSharedValue(1);
 
-  // Center card from top to middle (for opponent play animation)
-  const [showCenterCardTopToMiddle, setShowCenterCardTopToMiddle] = useState(false);
-  const [centerCardTopToMiddleCard, setCenterCardTopToMiddleCard] = useState<Card | null>(null);
-  const centerCardTopToMiddleY = useSharedValue(0);
+  // Dev animation for opponent hand to temp deck
+  const [showOpponentHandToTempDeckAnimation, setShowOpponentHandToTempDeckAnimation] = useState(false);
+  const [animatingOpponentHandCardsToTempDeck, setAnimatingOpponentHandCardsToTempDeck] = useState<Card[]>([]);
+  const opponentHandToTempDeckX = useSharedValue(0);
+  const opponentHandToTempDeckY = useSharedValue(0);
+  const opponentHandToTempDeckScale = useSharedValue(1);
 
-  // Center card from middle to up (for opponent draw animation)
-  const [showCenterCardUp, setShowCenterCardUp] = useState(false);
-  const centerCardUpY = useSharedValue(0);
+  // Dev animation for opponent hand to discard pile
+  const [showOpponentHandToDiscardAnimation, setShowOpponentHandToDiscardAnimation] = useState(false);
+  const [animatingOpponentHandCardsToDiscard, setAnimatingOpponentHandCardsToDiscard] = useState<Card[]>([]);
+  const opponentHandToDiscardX = useSharedValue(0);
+  const opponentHandToDiscardY = useSharedValue(0);
+  const opponentHandToDiscardScale = useSharedValue(1);
 
-  const centerCardDownAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: centerCardDownY.value }],
-    opacity: 1 - centerCardDownY.value / (height / 2),
+  // Dev animation for north temp deck to north deck
+  const [showNorthTempDeckToDeckAnimation, setShowNorthTempDeckToDeckAnimation] = useState(false);
+  const [animatingNorthTempDeckCardsToDeck, setAnimatingNorthTempDeckCardsToDeck] = useState<Card[]>([]);
+  const northTempDeckToDeckX = useSharedValue(0);
+  const northTempDeckToDeckY = useSharedValue(0);
+  const northTempDeckToDeckScale = useSharedValue(1);
+
+  const discardToTempDeckAnimStyle = useAnimatedStyle(() => ({
+    left: discardToTempDeckX.value - 36,
+    top: discardToTempDeckY.value - 52,
+    transform: [{ scale: discardToTempDeckScale.value }],
+    opacity: 1,
   }));
 
-  const centerCardTopToMiddleAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: centerCardTopToMiddleY.value }],
-    opacity: 1 + centerCardTopToMiddleY.value / (height / 2),
+  const opponentHandToTempDeckAnimStyle = useAnimatedStyle(() => ({
+    left: opponentHandToTempDeckX.value - 36,
+    top: opponentHandToTempDeckY.value - 52,
+    transform: [{ scale: opponentHandToTempDeckScale.value }],
+    opacity: 1,
   }));
 
-  const centerCardUpAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: centerCardUpY.value }],
-    opacity: 1 + centerCardUpY.value / (height / 2),
+  const opponentHandToDiscardAnimStyle = useAnimatedStyle(() => ({
+    left: opponentHandToDiscardX.value - 36,
+    top: opponentHandToDiscardY.value - 52,
+    transform: [{ scale: opponentHandToDiscardScale.value }],
+    opacity: 1,
   }));
 
-  function animateCenterCardDown() {
-    centerCardDownY.value = 0;
-    centerCardDownY.value = withTiming(height, { duration: 2500 }, (finished) => {
-      if (finished) runOnJS(setShowCenterCardDown)(false);
-    });
-  }
+  const northTempDeckToDeckAnimStyle = useAnimatedStyle(() => ({
+    left: northTempDeckToDeckX.value - 36,
+    top: northTempDeckToDeckY.value - 52,
+    transform: [{ scale: northTempDeckToDeckScale.value }],
+    opacity: 1,
+  }));
 
-  function animateCenterCardUp() {
-    centerCardUpY.value = 0.29;
-    centerCardUpY.value = withTiming(-height, { duration: 2500 }, (finished) => {
-      if (finished) runOnJS(setShowCenterCardUp)(false);
-    });
-  }
 
-  function animateCenterCardTopToMiddle() {
-    console.log('animateCenterCardTopToMiddle');
-    centerCardTopToMiddleY.value = -(height * 0.29); // Start from 10% from the top
-    centerCardTopToMiddleY.value = withTiming(0, { duration: 2500 }, (finished) => {
-      if (finished) {
-        runOnJS(setShowCenterCardTopToMiddle)(false);
-        runOnJS(setCenterCardTopToMiddleCard)(null);
-      }
-    });
-  }
 
-  // 3. In the useEffect that detects opponent play, measure the north hand card and animate from there
-  useEffect(() => {
-    if (game.discard.length > 0) {
-      const topCard = game.discard[game.discard.length - 1];
-      if (
-        localTopCard &&
-        (localTopCard.suit !== topCard.suit || localTopCard.value !== topCard.value)
-      ) {
-        console.log('opponent has added a card');
-        const added = game.discard.length - prevDiscardLength.current;
-        if (added > 0) {
-          setCenterCardTopToMiddleCard(topCard);
-          setShowCenterCardTopToMiddle(true);
-          animateCenterCardTopToMiddle();
-        }
-      }else{
-        console.log('opponent has not added a card');
-      }
-      prevDiscardLength.current = game.discard.length;
+
+  function animateDiscardToTempDeck(cards: Card[]) {
+    console.log('[ANIMATE] animateDiscardToTempDeck called with cards:', cards);
+    
+    if (cards.length === 0) {
+      console.log('[ANIMATE] No cards to animate, returning early');
+      return;
     }
-  }, [game.discard]);
+    
+    setAnimatingCardsToTempDeck(cards);
+    setShowDiscardToTempDeckAnimation(true);
+    console.log('[ANIMATE] Animation state set, measuring positions...');
+    
+    // Measure the discard pile position and temp deck position
+    InteractionManager.runAfterInteractions(() => {
+      function tryMeasure(attempt = 0) {
+        console.log('[ANIMATE] tryMeasure attempt:', attempt);
+        const discardRefCurrent = discardRef.current;
+        
+        if (!discardRefCurrent) {
+          console.log('[ANIMATE] discardRef not available');
+          if (attempt < 5) {
+            console.log('[ANIMATE] Retrying measurement...');
+            requestAnimationFrame(() => tryMeasure(attempt + 1));
+            return;
+          }
+          console.log('[ANIMATE] Measurement failed after 5 attempts, using fallback');
+          // Fallback animation if measurement fails
+          runOnJS(setShowDiscardToTempDeckAnimation)(false);
+          runOnJS(setAnimatingCardsToTempDeck)([]);
+          return;
+        }
+        
+        discardRefCurrent.measureInWindow((dx, dy, dwidth, dheight) => {
+          console.log('[ANIMATE] measureInWindow result:', { dx, dy, dwidth, dheight });
+          
+          if ([dx, dy].some(v => typeof v !== 'number' || isNaN(v))) {
+            console.log('[ANIMATE] Invalid measurements detected');
+            if (attempt < 5) {
+              console.log('[ANIMATE] Retrying measurement due to invalid values...');
+              requestAnimationFrame(() => tryMeasure(attempt + 1));
+              return;
+            }
+            console.log('[ANIMATE] Measurement failed after 5 attempts due to invalid values');
+            runOnJS(setShowDiscardToTempDeckAnimation)(false);
+            runOnJS(setAnimatingCardsToTempDeck)([]);
+            return;
+          }
+          
+          // Calculate discard pile center
+          const discardCenterX = dx + dwidth / 2;
+          const discardCenterY = dy + dheight / 2;
+          
+          // Calculate temp deck position (bottom left area)
+          const tempDeckX = width * 0.1; // 10% from left
+          const tempDeckY = height - 350; // Above the south hand
+          
+          console.log('[ANIMATE] Animation coordinates calculated:', {
+            discardCenterX,
+            discardCenterY,
+            tempDeckX,
+            tempDeckY
+          });
+          
+          // Set initial position to discard pile
+          discardToTempDeckX.value = discardCenterX;
+          discardToTempDeckY.value = discardCenterY;
+          discardToTempDeckScale.value = 1;
+          
+          // Animate to temp deck position with scale effect
+          discardToTempDeckX.value = withTiming(tempDeckX, { duration: 1200 });
+          discardToTempDeckY.value = withTiming(tempDeckY, { duration: 1200 });
+          discardToTempDeckScale.value = withTiming(0.8, { duration: 600 }, () => {
+            discardToTempDeckScale.value = withTiming(0.6, { duration: 600 }, (finished) => {
+              if (finished) {
+                runOnJS(setShowDiscardToTempDeckAnimation)(false);
+                runOnJS(setAnimatingCardsToTempDeck)([]);
+              }
+            });
+          });
+          
+          console.log('[ANIMATE] Discard to temp deck animation started');
+        });
+      }
+      
+      console.log('[ANIMATE] Starting measurement with 10ms delay');
+      setTimeout(() => tryMeasure(), 10);
+    });
+  }
+
+
+
+
 
   // Add a loading state: show spinner if auth is loading, user is not loaded, or firebaseGameData is not loaded
   // Note: We don't wait for usernameLoading because we can use user.displayName as fallback
@@ -1127,120 +1295,163 @@ export default function CasinoGameScreen() {
   const [pendingCardsToAdd, setPendingCardsToAdd] = useState<Card[]>([]);
 
   // Add this handler above the component return
-  function handleEndTurn() {
-    // TODO: Implement end turn logic
-    console.log('End Turn pressed');
+  async function handleEndTurn() {
+    console.log('[handleEndTurn] End Turn pressed');
+    console.log('[handleEndTurn] Current state:', {
+      gamePhase,
+      gameTurn: game.turn,
+      winner: game.winner,
+      chooseSuit: game.chooseSuit,
+      handSize: game.hands.south.length,
+      handSizeAtTurnStart,
+      canEndTurn: game.hands.south.length < handSizeAtTurnStart
+    });
+    
+    if (gamePhase !== 'playing') {
+      console.log('[handleEndTurn] Not in playing phase, returning');
+      return;
+    }
+    
+    if (game.winner !== null || game.chooseSuit) {
+      console.log('[handleEndTurn] Game has winner or choosing suit, returning');
+      return;
+    }
+    
+    // Only allow end turn if it's the local player's turn
+    if (game.turn !== 'south') {
+      console.log('[handleEndTurn] Not local player\'s turn, returning');
+      return;
+    }
+    
+    // Check if player has played at least one card (hand size decreased)
+    if (game.hands.south.length >= handSizeAtTurnStart) {
+      console.log('[handleEndTurn] Hand size not decreased, cannot end turn');
+      console.log('[handleEndTurn] Hand size details:', {
+        currentHandSize: game.hands.south.length,
+        handSizeAtTurnStart,
+        difference: handSizeAtTurnStart - game.hands.south.length
+      });
+      Alert.alert('Cannot End Turn', 'You must play at least one card before ending your turn.');
+      return;
+    }
+    
+    console.log('[handleEndTurn] Switching turn from south to north');
+    
+    // Switch turn to opponent
+    const newGameState: GameState = {
+      ...game,
+      turn: 'north' as Player,
+    };
+    
+    setGame(newGameState);
+    
+    // Clear selections and reset turn-specific states
+    setSelectedHandCards([]);
+    setSelectedDiscardCards([]);
+    
+    // Update Firebase with the new game state while preserving all existing values
+    try {
+      if (currentGameId && isPlayer1 !== null) {
+        const playerKey = isPlayer1 ? 'player1' : 'player2';
+        const otherPlayerKey = isPlayer1 ? 'player2' : 'player1';
+        const gameDocRef = doc(db, 'games', currentGameId);
+        
+        // Get current Firebase data to preserve all values
+        const docSnap = await getDoc(gameDocRef);
+        if (docSnap.exists()) {
+          const currentData = docSnap.data();
+          
+          // Preserve all existing Firebase values while updating only the turn
+          const updateData = {
+            // Preserve existing temp decks
+            [`players.${playerKey}.tempDeck`]: currentData?.players?.[playerKey]?.tempDeck || [],
+            [`players.${playerKey}.tempDeckSum`]: currentData?.players?.[playerKey]?.tempDeckSum || 0,
+            [`players.${otherPlayerKey}.tempDeck`]: currentData?.players?.[otherPlayerKey]?.tempDeck || [],
+            [`players.${otherPlayerKey}.tempDeckSum`]: currentData?.players?.[otherPlayerKey]?.tempDeckSum || 0,
+            
+            // Preserve existing decks
+            [`players.${playerKey}.deck`]: currentData?.players?.[playerKey]?.deck || [],
+            [`players.${otherPlayerKey}.deck`]: currentData?.players?.[otherPlayerKey]?.deck || [],
+            
+            // Update only the turn and action
+            turn: otherPlayerKey, // Switch to opponent's turn
+            lastAction: {
+              player: playerKey,
+              action: 'end_turn',
+              timestamp: serverTimestamp(),
+            },
+            lastUpdated: serverTimestamp(),
+          };
+          
+          await updateDoc(gameDocRef, updateData);
+          console.log('[handleEndTurn] Firebase updated successfully with preserved values');
+        }
+      }
+    } catch (error) {
+      console.error('[handleEndTurn] Error updating Firebase:', error);
+    }
   }
 
   // Removed selectedDiscardIndex - now using selectedDiscardCards array
 
   // Add function to add multiple cards to tempDeck
   async function addSelectedCardsToTempDeck() {
+    console.log('[addSelectedCardsToTempDeck] START');
+    console.log('[addSelectedCardsToTempDeck] Current state:', {
+      selectedHandCards,
+      selectedDiscardCards,
+      gameTurn: game.turn,
+      handSize: game.hands.south.length,
+      handSizeAtTurnStart,
+      canEndTurn: game.hands.south.length < handSizeAtTurnStart
+    });
+    
     if (selectedHandCards.length === 0 && selectedDiscardCards.length === 0) {
       console.log('[addSelectedCardsToTempDeck] No cards selected');
       return;
     }
-    
+    // Prevent action if not player's turn
+    if (game.turn !== 'south') {
+      console.log('[addSelectedCardsToTempDeck] Not player\'s turn');
+      return;
+    }
     // Get all selected cards
     const selectedHandCardObjects = selectedHandCards.map(idx => game.hands.south[idx]).filter(Boolean);
     const selectedDiscardCardObjects = selectedDiscardCards.map(idx => game.discard[idx]).filter(Boolean);
     const allSelectedCards = [...selectedHandCardObjects, ...selectedDiscardCardObjects];
-    
     if (allSelectedCards.length === 0) {
       console.log('[addSelectedCardsToTempDeck] No valid cards found');
       return;
     }
-    
-    // Calculate the sum of all selected cards
+    // Remove all validation and ambiguous value logic
+    // Just move the selected cards to the temp deck
+    // Set the temp deck sum to the sum of the cards (or just increment as needed)
     const sum = allSelectedCards.reduce((total, card) => total + cardNumericValue(card), 0);
-    console.log('[addSelectedCardsToTempDeck] Total sum:', sum, 'cards:', allSelectedCards);
-    
-    // Get current temp deck sum from Firebase data
-    const currentTempDeckSum = firebaseGameData?.players?.[isPlayer1 ? 'player1' : 'player2']?.tempDeckSum || 0;
-    console.log('[addSelectedCardsToTempDeck] Current temp deck sum:', currentTempDeckSum);
-    
-    let newTempDeckSum = currentTempDeckSum;
-    // If temp deck sum is 0, only check if new sum is <= 10
-    if (currentTempDeckSum === 0) {
-      if (sum > 10) {
-        console.log('[addSelectedCardsToTempDeck] Sum > 10, not allowing addition to temp deck');
-        setSelectedHandCards([]);
-        setSelectedDiscardCards([]);
-        return;
-      }
-      // Set the temp deck sum to the sum of the first cards added
-      newTempDeckSum = sum;
-    } else {
-      // If temp deck sum > 0, new cards must add up to the existing sum
-      if (sum !== currentTempDeckSum) {
-        console.log('[addSelectedCardsToTempDeck] Sum does not match temp deck sum:', sum, '!=', currentTempDeckSum);
-        setSelectedHandCards([]);
-        setSelectedDiscardCards([]);
-        return;
-      }
-    }
-    
-    // Check if we have multiple cards of the same value that could be used to build different sums
-    const valueGroups = new Map<number, Card[]>();
-    allSelectedCards.forEach(card => {
-      const value = cardNumericValue(card);
-      if (!valueGroups.has(value)) {
-        valueGroups.set(value, []);
-      }
-      valueGroups.get(value)!.push(card);
-    });
-    
-    // Find values that have multiple cards and could be used to build different sums
-    const ambiguousValues: { value: number; cards: Card[] }[] = [];
-    valueGroups.forEach((cards, value) => {
-      if (cards.length > 1) {
-        // Check if this value could be used to build different sums
-        const possibleSums = new Set<number>();
-        
-        // Single card sum
-        possibleSums.add(value);
-        
-        // Multiple cards sum (if we have enough cards and the sum is <= 10)
-        if (cards.length >= 2 && value * 2 <= 10) {
-          possibleSums.add(value * 2);
-        }
-        if (cards.length >= 3 && value * 3 <= 10) {
-          possibleSums.add(value * 3);
-        }
-        if (cards.length >= 4 && value * 4 <= 10) {
-          possibleSums.add(value * 4);
-        }
-        
-        // Only show as ambiguous if we have multiple valid options
-        if (possibleSums.size > 1) {
-          ambiguousValues.push({ value, cards });
-        }
-      }
-    });
-    
-    // If we have ambiguous values, show the choice modal
-    if (ambiguousValues.length > 0) {
-      console.log('[addSelectedCardsToTempDeck] Found ambiguous values:', ambiguousValues);
-      setCardChoiceOptions(ambiguousValues);
-      setPendingCardsToAdd(allSelectedCards);
-      setShowCardChoiceModal(true);
-      return;
-    }
-    
-    // No ambiguity, proceed with normal logic
-    await addCardsToTempDeck(allSelectedCards, newTempDeckSum);
+    await addCardsToTempDeck(allSelectedCards, sum);
   }
 
   // Helper function to actually add cards to temp deck
   async function addCardsToTempDeck(cardsToAdd: Card[], newTempDeckSum: number) {
     console.log('[addCardsToTempDeck] Adding cards to temp deck:', cardsToAdd, 'sum:', newTempDeckSum);
     
+    // Separate hand cards from discard cards
+    const discardCardKeys = new Set(game.discard.map(card => `${card.suit}-${card.value}`));
+    const handCards = cardsToAdd.filter(card => !discardCardKeys.has(`${card.suit}-${card.value}`));
+    const discardCards = cardsToAdd.filter(card => discardCardKeys.has(`${card.suit}-${card.value}`));
+    
+    console.log('[addCardsToTempDeck] Hand cards:', handCards, 'Discard cards:', discardCards);
+    
+
+    
+    // Animate discard cards to temp deck
+    if (discardCards.length > 0) {
+      animateDiscardToTempDeck(discardCards);
+    }
+    
     if (currentGameId && isPlayer1 !== null) {
       const playerKey = isPlayer1 ? 'player1' : 'player2';
       const otherPlayerKey = isPlayer1 ? 'player2' : 'player1';
       const gameDocRef = doc(db, 'games', currentGameId);
-      
-      // Get current tempDecks for both players
       let tempDeck: Card[] = [];
       let otherTempDeck: Card[] = [];
       try {
@@ -1250,18 +1461,14 @@ export default function CasinoGameScreen() {
           otherTempDeck = docSnap.data()?.players?.[otherPlayerKey]?.tempDeck || [];
         }
       } catch {}
-      
       const newTempDeck = [...tempDeck, ...cardsToAdd];
-      
-      // Create a map to track which cards to remove
+      // Remove cards from hand
+      const newHand = [...game.hands.south];
       const cardsToRemove = new Map<string, number>();
       cardsToAdd.forEach(card => {
         const key = `${card.suit}-${card.value}`;
         cardsToRemove.set(key, (cardsToRemove.get(key) || 0) + 1);
       });
-      
-      // Remove cards from hand
-      const newHand = [...game.hands.south];
       const remainingHandCards: Card[] = [];
       newHand.forEach(card => {
         const key = `${card.suit}-${card.value}`;
@@ -1272,7 +1479,6 @@ export default function CasinoGameScreen() {
           remainingHandCards.push(card);
         }
       });
-      
       // Remove cards from discard
       const newDiscard = [...game.discard];
       const remainingDiscardCards: Card[] = [];
@@ -1285,80 +1491,77 @@ export default function CasinoGameScreen() {
           remainingDiscardCards.push(card);
         }
       });
-      
-      // Update all relevant fields in a single atomic update
-      await updateDoc(gameDocRef, {
-        [`players.${playerKey}.tempDeck`]: newTempDeck,
-        [`players.${playerKey}.tempDeckSum`]: newTempDeckSum,
-        [`players.${otherPlayerKey}.tempDeck`]: otherTempDeck,
-        [`players.player1.hand`]: isPlayer1 ? remainingHandCards : game.hands.north,
-        [`players.player2.hand`]: isPlayer1 ? game.hands.north : remainingHandCards,
-        discardPile: remainingDiscardCards,
-        currentCard: remainingDiscardCards.length > 0 ? remainingDiscardCards[remainingDiscardCards.length - 1] : null,
+          await updateDoc(gameDocRef, {
+      [`players.${playerKey}.tempDeck`]: newTempDeck,
+      [`players.${playerKey}.tempDeckSum`]: newTempDeckSum,
+      [`players.${otherPlayerKey}.tempDeck`]: otherTempDeck,
+      [`players.player1.hand`]: isPlayer1 ? remainingHandCards : game.hands.north,
+      [`players.player2.hand`]: isPlayer1 ? game.hands.north : remainingHandCards,
+      discardPile: remainingDiscardCards,
+      currentCard: remainingDiscardCards.length > 0 ? remainingDiscardCards[remainingDiscardCards.length - 1] : null,
+      lastAction: {
+        player: playerKey,
+        action: 'add_to_temp_deck',
+        timestamp: serverTimestamp(),
+      },
+    });
+    
+        // Don't update hand size at turn start - keep it at the original value
+    console.log('[addCardsToTempDeck] Keeping hand size at turn start unchanged:', {
+      handSizeAtTurnStart,
+      newHandSize: remainingHandCards.length,
+      cardsAdded: cardsToAdd.length,
+      canEndTurn: remainingHandCards.length < handSizeAtTurnStart
+    });
+    
+    // Update local game state to reflect the hand changes immediately
+    console.log('[addCardsToTempDeck] Updating local game state');
+    setGame(prevGame => {
+      const newGame = {
+        ...prevGame,
+        hands: {
+          ...prevGame.hands,
+          south: remainingHandCards
+        },
+        discard: remainingDiscardCards
+      };
+      console.log('[addCardsToTempDeck] New game state:', {
+        handSize: newGame.hands.south.length,
+        handSizeAtTurnStart: handSizeAtTurnStart,
+        canEndTurn: newGame.hands.south.length < handSizeAtTurnStart
       });
-    }
-    
-    // Clear selections
-    setSelectedHandCards([]);
-    setSelectedDiscardCards([]);
+      return newGame;
+    });
+  }
+  setSelectedHandCards([]);
+  setSelectedDiscardCards([]);
   }
 
-  // Handle card choice from modal
-  async function handleCardChoice(selectedValue: number, selectedCards: Card[]) {
-    console.log('[handleCardChoice] Selected value:', selectedValue, 'cards:', selectedCards);
-    
-    // Get current temp deck sum from Firebase data
-    const currentTempDeckSum = firebaseGameData?.players?.[isPlayer1 ? 'player1' : 'player2']?.tempDeckSum || 0;
-    
-    // Calculate new temp deck sum
-    let newTempDeckSum = currentTempDeckSum;
-    if (currentTempDeckSum === 0) {
-      newTempDeckSum = selectedValue;
-    } else {
-      // This should match the existing sum since we validated earlier
-      newTempDeckSum = currentTempDeckSum;
-    }
-    
-    // Add the selected cards to temp deck
-    await addCardsToTempDeck(selectedCards, newTempDeckSum);
-    
-    // Close the modal
-    setShowCardChoiceModal(false);
-    setCardChoiceOptions([]);
-    setPendingCardsToAdd([]);
-  }
-
-  // Update handleCardSelect for multiple card selection
+  // Update handleCardSelect for single card selection
   function handleCardSelect(idx: number) {
-    if (gamePhase !== 'playing' || game.winner !== null || game.chooseSuit) {
+    if (gamePhase !== 'playing' || game.winner !== null || game.chooseSuit || game.turn !== 'south') {
       return;
     }
-    const card = game.hands.south[idx];
-    const top = game.discard[game.discard.length - 1];
-    
-    // Only allow selection if card can be played
-    if (canPlay(card, top, game.currentSuit)) {
-      // Toggle selection - if already selected, remove it
-      if (selectedHandCards.includes(idx)) {
-        setSelectedHandCards(prev => prev.filter(i => i !== idx));
-      } else {
-        // Add to selection
-        setSelectedHandCards(prev => [...prev, idx]);
-      }
+    // Only allow one card to be selected at a time
+    if (selectedHandCards.includes(idx)) {
+      setSelectedHandCards([]);
+      setSelectedDiscardCards([]);
+    } else {
+      setSelectedHandCards([idx]);
+      setSelectedDiscardCards([]);
     }
   }
 
-  // Update handleDiscardCardClick for multiple card selection
+  // Update handleDiscardCardClick for single card selection
   function handleDiscardCardClick(discardIdx?: number) {
-    // If no index provided, do nothing
-    if (typeof discardIdx !== 'number') return;
-    
-    // Toggle selection - if already selected, remove it
+    if (typeof discardIdx !== 'number' || game.turn !== 'south') return;
+    // Only allow one card to be selected at a time
     if (selectedDiscardCards.includes(discardIdx)) {
-      setSelectedDiscardCards(prev => prev.filter(i => i !== discardIdx));
+      setSelectedDiscardCards([]);
+      setSelectedHandCards([]);
     } else {
-      // Add to selection
-      setSelectedDiscardCards(prev => [...prev, discardIdx]);
+      setSelectedDiscardCards([discardIdx]);
+      setSelectedHandCards([]);
     }
   }
 
@@ -1366,14 +1569,339 @@ export default function CasinoGameScreen() {
   const [localTempDeck, setLocalTempDeck] = useState<Card[]>([]);
   const [localTempDeckSum, setLocalTempDeckSum] = useState<number>(0);
 
+  // Add state for opponent's tempDeck
+  const [opponentTempDeck, setOpponentTempDeck] = useState<Card[]>([]);
+  const [opponentTempDeckSum, setOpponentTempDeckSum] = useState<number>(0);
+
+  // Add state for player's deck
+  const [playerDeck, setPlayerDeck] = useState<Card[]>([]);
+  const [opponentDeck, setOpponentDeck] = useState<Card[]>([]);
+
+  // Add state to track the last card played by opponent for animation
+  const [lastOpponentPlayedCard, setLastOpponentPlayedCard] = useState<Card | null>(null);
+
   // Sync localTempDeck with Firebase
   useEffect(() => {
     if (!firebaseGameData || isPlayer1 === null) return;
     const playerKey = isPlayer1 ? 'player1' : 'player2';
+    const opponentKey = isPlayer1 ? 'player2' : 'player1';
+    
+    // Sync player and opponent decks FIRST (before animation detection)
+    const playerDeckData = firebaseGameData?.players?.[playerKey]?.deck || [];
+    const opponentDeckData = firebaseGameData?.players?.[opponentKey]?.deck || [];
+    setPlayerDeck(playerDeckData);
+    setOpponentDeck(opponentDeckData);
+    
+    // Sync local player's temp deck
     const tempDeck = firebaseGameData?.players?.[playerKey]?.tempDeck || [];
     const tempDeckSum = firebaseGameData?.players?.[playerKey]?.tempDeckSum || 0;
     setLocalTempDeck(tempDeck);
     setLocalTempDeckSum(tempDeckSum);
+    // Sync opponent's temp deck and detect changes
+    const opponentTempDeck = firebaseGameData?.players?.[opponentKey]?.tempDeck || [];
+    const opponentTempDeckSum = firebaseGameData?.players?.[opponentKey]?.tempDeckSum || 0;
+    
+    // Add logic to detect if the last action was by the opponent
+    const myPlayerKey = isPlayer1 ? 'player1' : 'player2';
+    const lastActionByOpponent = firebaseGameData?.lastAction && firebaseGameData.lastAction.player && firebaseGameData.lastAction.player !== myPlayerKey;
+    
+    // Alternative detection: if opponent's temp deck increased and it's not our turn, assume it was opponent action
+    const isOpponentTurn = game.turn === 'north';
+    // More reliable detection: if opponent's temp deck increased and we're not in the middle of our own action, assume it was opponent action
+    const opponentActionDetected = lastActionByOpponent || (opponentTempDeck.length > prevOpponentTempDeckLength.current && !isSyncingToFirebase.current);
+    
+    console.log('[ANIMATION] Debug opponent temp deck animation conditions:', {
+      myPlayerKey,
+      lastActionPlayer: firebaseGameData?.lastAction?.player,
+      lastActionByOpponent,
+      isOpponentTurn,
+      isSyncingToFirebase: isSyncingToFirebase.current,
+      opponentActionDetected,
+      opponentTempDeckLength: opponentTempDeck.length,
+      prevOpponentTempDeckLength: prevOpponentTempDeckLength.current,
+      firebaseGameDataLastAction: firebaseGameData?.lastAction
+    });
+    
+    // Check if opponent's temp deck increased (they added cards)
+    if (opponentTempDeck.length > prevOpponentTempDeckLength.current) {
+      console.log('Opponent added cards to temp deck');
+      const newCards = opponentTempDeck.slice(prevOpponentTempDeckLength.current);
+      console.log('[ANIMATION] New cards added to opponent temp deck:', newCards);
+      
+      if (newCards.length > 0) {
+        // Get current discard pile
+        const currentDiscardPile = firebaseGameData?.discardPile || [];
+        
+        // Determine if the new cards are from hand or discard pile by comparing with previous discard pile
+        const prevDiscardCardKeys = new Set(prevDiscardPile.current.map((card: Card) => `${card.suit}-${card.value}`));
+        const currentDiscardCardKeys = new Set(currentDiscardPile.map((card: Card) => `${card.suit}-${card.value}`));
+        
+        // Cards that were in previous discard pile but not in current discard pile (moved to temp deck)
+        const movedFromDiscard = newCards.filter((card: Card) => 
+          prevDiscardCardKeys.has(`${card.suit}-${card.value}`) && 
+          !currentDiscardCardKeys.has(`${card.suit}-${card.value}`)
+        );
+        
+        // Cards that were not in previous discard pile (from hand)
+        const movedFromHand = newCards.filter((card: Card) => 
+          !prevDiscardCardKeys.has(`${card.suit}-${card.value}`)
+        );
+        
+        console.log('[ANIMATION] Card analysis:', {
+          totalNewCards: newCards.length,
+          movedFromHand: movedFromHand.length,
+          movedFromDiscard: movedFromDiscard.length,
+          prevDiscardLength: prevDiscardPile.current.length,
+          currentDiscardLength: currentDiscardPile.length,
+          lastActionByOpponent
+        });
+        
+        if (movedFromHand.length > 0 && opponentActionDetected && firebaseGameData?.lastAction?.action === 'add_to_temp_deck') {
+          console.log('[ANIMATION] Triggering opponent hand to temp deck animation with:', movedFromHand);
+          // Trigger the animation for cards moving from opponent hand to temp deck
+          setAnimatingOpponentHandCardsToTempDeck(movedFromHand);
+          setShowOpponentHandToTempDeckAnimation(true);
+          
+          InteractionManager.runAfterInteractions(() => {
+            // Start position: approximate opponent hand area (top center)
+            const startX = width / 2;
+            const startY = 100;
+            
+            // End position: opponent temp deck area (top right)
+            const endX = width * 0.9;
+            const endY = 200;
+            
+            console.log('[ANIMATION] Opponent hand to temp deck animation coordinates:', { startX, startY, endX, endY });
+            
+            // Set initial position
+            opponentHandToTempDeckX.value = startX;
+            opponentHandToTempDeckY.value = startY;
+            opponentHandToTempDeckScale.value = 1;
+            
+            // Animate to temp deck position
+            opponentHandToTempDeckX.value = withTiming(endX, { duration: 2000 });
+            opponentHandToTempDeckY.value = withTiming(endY, { duration: 2000 });
+            opponentHandToTempDeckScale.value = withTiming(0.8, { duration: 1000 }, () => {
+              opponentHandToTempDeckScale.value = withTiming(0.6, { duration: 1000 }, (finished) => {
+                if (finished) {
+                  runOnJS(setShowOpponentHandToTempDeckAnimation)(false);
+                  runOnJS(setAnimatingOpponentHandCardsToTempDeck)([]);
+                }
+              });
+            });
+          });
+        } else if (movedFromDiscard.length > 0 && opponentActionDetected && firebaseGameData?.lastAction?.action === 'add_to_temp_deck') {
+          console.log('[ANIMATION] Triggering opponent discard to temp deck animation with:', movedFromDiscard);
+          // Trigger the animation for cards moving from discard pile to opponent temp deck
+          setAnimatingCardsToTempDeck(movedFromDiscard);
+          setShowDiscardToTempDeckAnimation(true);
+          
+          InteractionManager.runAfterInteractions(() => {
+            // Start position: discard pile area (center of screen)
+            const startX = width / 2;
+            const startY = height / 2;
+            
+            // End position: north temp deck area (top right)
+            const endX = width * 0.9;
+            const endY = 200;
+            
+            console.log('[ANIMATION] Opponent discard to temp deck animation coordinates:', { startX, startY, endX, endY });
+            
+            // Set initial position
+            discardToTempDeckX.value = startX;
+            discardToTempDeckY.value = startY;
+            discardToTempDeckScale.value = 1;
+            
+            // Animate to north temp deck position with scale effect
+            discardToTempDeckX.value = withTiming(endX, { duration: 1200 });
+            discardToTempDeckY.value = withTiming(endY, { duration: 1200 });
+            discardToTempDeckScale.value = withTiming(0.8, { duration: 600 }, () => {
+              discardToTempDeckScale.value = withTiming(0.6, { duration: 600 }, (finished) => {
+                if (finished) {
+                  runOnJS(setShowDiscardToTempDeckAnimation)(false);
+                  runOnJS(setAnimatingCardsToTempDeck)([]);
+                }
+              });
+            });
+          });
+        } else {
+          console.log('[ANIMATION] Not triggering opponent temp deck animation because:', {
+            movedFromHandLength: movedFromHand.length,
+            movedFromDiscardLength: movedFromDiscard.length,
+            opponentActionDetected,
+            reason: movedFromHand.length === 0 && movedFromDiscard.length === 0 ? 'No cards to animate' : 'Not opponent action'
+          });
+        }
+
+      }
+    }
+    
+    // Check if opponent moved cards from temp deck to deck
+    // Use Firebase data directly instead of local state to avoid timing issues
+    const firebaseOpponentDeck = firebaseGameData?.players?.[opponentKey]?.deck || [];
+    const currentOpponentDeckLength = firebaseOpponentDeck.length;
+    const previousOpponentDeckLength = prevOpponentDeckLength.current;
+    
+    // Debug: Log the actual deck data being used for animation detection
+    console.log('[ANIMATION][TEMP→DECK] Deck data for animation detection:', {
+      opponentDeck: opponentDeck.map((c: Card) => `${c.value}${c.suit}`),
+      firebaseOpponentDeck: firebaseOpponentDeck.map((c: Card) => `${c.value}${c.suit}`),
+      currentOpponentDeckLength,
+      previousOpponentDeckLength,
+    });
+    
+    console.log('[ANIMATION][TEMP→DECK] Debug values:', {
+      currentOpponentDeckLength,
+      previousOpponentDeckLength,
+      deckIncreased: currentOpponentDeckLength > previousOpponentDeckLength,
+      opponentActionDetected,
+      lastAction: firebaseGameData?.lastAction?.action,
+      lastActionPlayer: firebaseGameData?.lastAction?.player,
+      shouldTrigger: currentOpponentDeckLength > previousOpponentDeckLength && opponentActionDetected
+    });
+    
+    // Only trigger animation if opponent's deck increased AND the last action was specifically 'eat_temp_deck' by opponent
+    if (currentOpponentDeckLength > previousOpponentDeckLength && 
+        opponentActionDetected && 
+        firebaseGameData?.lastAction?.action === 'eat_temp_deck') {
+      console.log('[ANIMATION] Opponent moved cards from temp deck to deck');
+      const newDeckCards = firebaseOpponentDeck.slice(previousOpponentDeckLength);
+      console.log('[ANIMATION] New cards added to opponent deck:', newDeckCards);
+      
+      if (newDeckCards.length > 0) {
+        console.log('[ANIMATION] Triggering north temp deck to deck animation with:', newDeckCards);
+        setAnimatingNorthTempDeckCardsToDeck(newDeckCards);
+        setShowNorthTempDeckToDeckAnimation(true);
+        
+        InteractionManager.runAfterInteractions(() => {
+          // Start position: opponent temp deck area (top right)
+          const startX = width * 0.8;
+          const startY = 250;
+          
+          // End position: opponent deck area (top left)
+          const endX = width * 0.1;
+          const endY = 100;
+          
+          console.log('[ANIMATION] North temp deck to deck animation coordinates:', { startX, startY, endX, endY });
+          
+          // Set initial position
+          northTempDeckToDeckX.value = startX;
+          northTempDeckToDeckY.value = startY;
+          northTempDeckToDeckScale.value = 1;
+          
+          // Animate to deck position with scale effect
+          northTempDeckToDeckX.value = withTiming(endX, { duration: 1800 });
+          northTempDeckToDeckY.value = withTiming(endY, { duration: 1800 });
+          northTempDeckToDeckScale.value = withTiming(0.9, { duration: 900 }, () => {
+            northTempDeckToDeckScale.value = withTiming(0.7, { duration: 900 }, (finished) => {
+              if (finished) {
+                runOnJS(setShowNorthTempDeckToDeckAnimation)(false);
+                runOnJS(setAnimatingNorthTempDeckCardsToDeck)([]);
+              }
+            });
+          });
+        });
+      }
+    }
+    
+    // Check if opponent played a card (hand decreased and discard increased)
+    const currentOpponentHandLength = game.hands.north.length;
+    const currentDiscardLength = game.discard.length;
+    const previousOpponentHandLength = prevOpponentHandLength.current;
+    const previousDiscardLength = prevDiscardLength.current;
+
+    // Only run hand to discard animation logic if the action is actually 'play'
+    if (firebaseGameData?.lastAction?.action === 'play') {
+      // Add detailed logging for debugging
+      console.log('[ANIMATION][HAND→DISCARD] Values:', {
+        currentOpponentHandLength,
+        previousOpponentHandLength,
+        currentDiscardLength,
+        previousDiscardLength,
+        handDecreased: currentOpponentHandLength < previousOpponentHandLength,
+        discardIncreased: currentDiscardLength > previousDiscardLength,
+        isSyncingToFirebase: isSyncingToFirebase.current,
+        gameTurn: game.turn,
+        lastAction: firebaseGameData?.lastAction?.action,
+        lastActionPlayer: firebaseGameData?.lastAction?.player,
+        lastActionByOpponent,
+        shouldTrigger: game.turn === 'north' && 
+                      firebaseGameData?.lastAction?.action === 'play' && 
+                      lastActionByOpponent && 
+                      !isSyncingToFirebase.current
+      });
+
+    // Fix: Trigger animation if it's opponent's turn, last action was a play by opponent
+    if (
+      game.turn === 'north' && // It's opponent's turn (meaning they just played)
+      firebaseGameData?.lastAction?.action === 'play' &&
+      lastActionByOpponent && // The last action was by the opponent
+      !isSyncingToFirebase.current // Don't trigger during our own sync
+    ) {
+      console.log('[ANIMATION] Opponent played a card from hand to discard pile (final logic)');
+      
+      // Get the card that was just played from Firebase currentCard
+      const playedCard = firebaseGameData?.currentCard;
+      
+      if (playedCard) {
+        console.log('[ANIMATION] Triggering opponent hand to discard animation with:', playedCard);
+        setAnimatingOpponentHandCardsToDiscard([playedCard]);
+        setShowOpponentHandToDiscardAnimation(true);
+        InteractionManager.runAfterInteractions(() => {
+          // Start position: approximate opponent hand area (top center)
+          const startX = width / 2;
+          const startY = 100;
+          // End position: discard pile area (center of screen)
+          const endX = width / 2;
+          const endY = height / 2;
+          console.log('[ANIMATION] Opponent hand to discard animation coordinates:', { startX, startY, endX, endY });
+          opponentHandToDiscardX.value = startX;
+          opponentHandToDiscardY.value = startY;
+          opponentHandToDiscardScale.value = 1;
+          opponentHandToDiscardX.value = withTiming(endX, { duration: 1500 });
+          opponentHandToDiscardY.value = withTiming(endY, { duration: 1500 });
+          opponentHandToDiscardScale.value = withTiming(1.1, { duration: 750 }, () => {
+            opponentHandToDiscardScale.value = withTiming(1, { duration: 750 }, (finished) => {
+              if (finished) {
+                runOnJS(setShowOpponentHandToDiscardAnimation)(false);
+                runOnJS(setAnimatingOpponentHandCardsToDiscard)([]);
+              }
+            });
+          });
+        });
+      }
+    }
+    }
+    
+    // Update the previous length for next comparison (after animation)
+    prevOpponentTempDeckLength.current = opponentTempDeck.length;
+    prevOpponentHandLength.current = game.hands.north.length;
+    prevDiscardLength.current = currentDiscardLength;
+    prevDiscardPile.current = firebaseGameData?.discardPile || [];
+    prevOpponentDeckLength.current = opponentDeck.length;
+
+    setOpponentTempDeck(opponentTempDeck);
+    setOpponentTempDeckSum(opponentTempDeckSum);
+
+    // Debug deck data (moved from duplicate sync)
+    console.log('[DECK SYNC] Debug deck data:', {
+      playerKey,
+      opponentKey,
+      playerDeckLength: playerDeckData.length,
+      opponentDeckLength: opponentDeckData.length,
+      playerDeck: playerDeckData.map((c: Card) => `${c.value}${c.suit}`),
+      opponentDeck: opponentDeckData.map((c: Card) => `${c.value}${c.suit}`),
+      firebaseGameDataPlayers: {
+        player1: {
+          deckLength: firebaseGameData?.players?.player1?.deck?.length || 0,
+          deck: firebaseGameData?.players?.player1?.deck?.map((c: Card) => `${c.value}${c.suit}`) || []
+        },
+        player2: {
+          deckLength: firebaseGameData?.players?.player2?.deck?.length || 0,
+          deck: firebaseGameData?.players?.player2?.deck?.map((c: Card) => `${c.value}${c.suit}`) || []
+        }
+      }
+    });
   }, [firebaseGameData, isPlayer1]);
 
   // Helper for deterministic random (so cards don't jump on every render)
@@ -1392,11 +1920,15 @@ export default function CasinoGameScreen() {
       winner: game.winner,
       chooseSuit: game.chooseSuit
     });
+    // Prevent play if not player's turn
+    if (game.turn !== 'south') {
+      return;
+    }
     // Prevent play if player has a temp deck and round is 1
     const playerKey = isPlayer1 ? 'player1' : 'player2';
     const tempDeck = firebaseGameData?.players?.[playerKey]?.tempDeck || [];
     if (round === 1 && tempDeck.length > 0) {
-      Alert.alert('Finish Temp Deck', 'You must finish your temp deck before playing to the discard pile.');
+      Alert.alert('Invalid Move', 'Can\'t throw card on the floor.');
       return;
     }
     if (selectedHandCards.length > 0 && gamePhase === 'playing') {
@@ -1415,6 +1947,63 @@ export default function CasinoGameScreen() {
     }
   }
 
+  // Add this handler above the component return
+  async function handleEatTempDeck() {
+    console.log('[handleEatTempDeck] START - currentGameId:', currentGameId, 'isPlayer1:', isPlayer1);
+    if (!currentGameId || isPlayer1 === null) return;
+    // Prevent action if not player's turn
+    if (game.turn !== 'south') {
+      return;
+    }
+    const playerKey = isPlayer1 ? 'player1' : 'player2';
+    const gameDocRef = doc(db, 'games', currentGameId);
+    // Get tempDeck and deck from Firebase
+    let tempDeck: Card[] = [];
+    let deck: Card[] = [];
+    try {
+      const docSnap = await getDoc(gameDocRef);
+      if (docSnap.exists()) {
+        tempDeck = docSnap.data()?.players?.[playerKey]?.tempDeck || [];
+        deck = docSnap.data()?.players?.[playerKey]?.deck || [];
+        console.log('[handleEatTempDeck] Firebase data:', {
+          tempDeckLength: tempDeck.length,
+          deckLength: deck.length,
+          tempDeck: tempDeck.map(c => `${c.value}${c.suit}`),
+          deck: deck.map(c => `${c.value}${c.suit}`)
+        });
+      }
+    } catch (err) {
+      console.log('[handleEatTempDeck] Error fetching Firebase doc:', err);
+    }
+    if (tempDeck.length === 0) {
+      console.log('[handleEatTempDeck] No temp deck cards to move, returning');
+      return;
+    }
+    // Move all tempDeck cards to deck
+    const newDeck = [...deck, ...tempDeck];
+    console.log('[handleEatTempDeck] Moving cards:', {
+      fromTempDeck: tempDeck.map(c => `${c.value}${c.suit}`),
+      toDeck: newDeck.map(c => `${c.value}${c.suit}`),
+      newDeckLength: newDeck.length
+    });
+    
+    try {
+      await updateDoc(gameDocRef, {
+        [`players.${playerKey}.deck`]: newDeck,
+        [`players.${playerKey}.tempDeck`]: [],
+        [`players.${playerKey}.tempDeckSum`]: 0,
+        lastAction: {
+          player: playerKey,
+          action: 'eat_temp_deck',
+          timestamp: serverTimestamp(),
+        },
+      });
+      console.log('[handleEatTempDeck] Firebase update completed successfully');
+    } catch (err) {
+      console.log('[handleEatTempDeck] Error updating Firebase:', err);
+    }
+  }
+
   if (isLoading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#14532d' }}>
@@ -1427,7 +2016,134 @@ export default function CasinoGameScreen() {
   return (
     <View style={{ flex: 1, position: 'relative' }}>
       
-      {/* Removed animated card - no longer needed */}
+
+
+      {/* Animated cards moving from discard pile to temp deck */}
+      {showDiscardToTempDeckAnimation && animatingCardsToTempDeck.length > 0 && (
+        <Animated.View
+          style={[
+            {
+              position: 'absolute',
+              zIndex: 1000,
+              pointerEvents: 'none',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3,
+              shadowRadius: 8,
+              elevation: 8,
+            },
+            discardToTempDeckAnimStyle
+          ]}
+        >
+          {/* Show the first card as representative of the group */}
+          <CasinoCard 
+            suit={animatingCardsToTempDeck[0].suit} 
+            value={animatingCardsToTempDeck[0].value} 
+            style={{ width: 72, height: 104 }}
+          />
+          {/* Show a small indicator if multiple cards */}
+          {animatingCardsToTempDeck.length > 1 && (
+            <View style={{
+              position: 'absolute',
+              top: -8,
+              right: -8,
+              backgroundColor: '#FFD700',
+              borderRadius: 12,
+              width: 24,
+              height: 24,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: 2,
+              borderColor: '#fff',
+            }}>
+              <ThemedText style={{
+                color: '#333',
+                fontSize: 12,
+                fontWeight: 'bold',
+              }}>
+                {animatingCardsToTempDeck.length}
+              </ThemedText>
+            </View>
+          )}
+        </Animated.View>
+      )}
+
+      {/* Dev animated card moving from opponent hand to temp deck */}
+      {showOpponentHandToTempDeckAnimation && animatingOpponentHandCardsToTempDeck.length > 0 && (
+        <Animated.View
+          style={[
+            {
+              position: 'absolute',
+              zIndex: 1000,
+              pointerEvents: 'none',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3,
+              shadowRadius: 8,
+              elevation: 8,
+            },
+            opponentHandToTempDeckAnimStyle
+          ]}
+        >
+          <CasinoCard 
+            suit={animatingOpponentHandCardsToTempDeck[0].suit} 
+            value={animatingOpponentHandCardsToTempDeck[0].value} 
+            style={{ width: 72, height: 104 }}
+          />
+        </Animated.View>
+      )}
+
+      {/* Dev animated card moving from opponent hand to discard pile */}
+      {showOpponentHandToDiscardAnimation && animatingOpponentHandCardsToDiscard.length > 0 && (
+        <Animated.View
+          style={[
+            {
+              position: 'absolute',
+              zIndex: 1000,
+              pointerEvents: 'none',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3,
+              shadowRadius: 8,
+              elevation: 8,
+            },
+            opponentHandToDiscardAnimStyle
+          ]}
+        >
+          <CasinoCard 
+            suit={animatingOpponentHandCardsToDiscard[0].suit} 
+            value={animatingOpponentHandCardsToDiscard[0].value} 
+            style={{ width: 72, height: 104 }}
+          />
+        </Animated.View>
+      )}
+
+      {/* Dev animated card moving from north temp deck to north deck */}
+      {showNorthTempDeckToDeckAnimation && animatingNorthTempDeckCardsToDeck.length > 0 && (
+        <Animated.View
+          style={[
+            {
+              position: 'absolute',
+              zIndex: 1000,
+              pointerEvents: 'none',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3,
+              shadowRadius: 8,
+              elevation: 8,
+            },
+            northTempDeckToDeckAnimStyle
+          ]}
+        >
+          <CasinoCard 
+            suit={animatingNorthTempDeckCardsToDeck[0].suit} 
+            value={animatingNorthTempDeckCardsToDeck[0].value} 
+            style={{ width: 72, height: 104 }}
+          />
+        </Animated.View>
+      )}
+
+
 
       {/* Box animation demo (like the test page) */}
       
@@ -1519,7 +2235,11 @@ export default function CasinoGameScreen() {
               <View style={styles.northHandContainer}>
                 <View style={styles.northHandRow}>
                   <View style={{ marginRight: 8 }}>
-                    <DeckPlaceholder style={styles.northDeckPlaceholder} text="Deck" />
+                    <DeckPlaceholder 
+                      style={styles.northDeckPlaceholder} 
+                      text="Deck" 
+                      cards={opponentDeck}
+                    />
                   </View>
                   {game.hands.north.length > 0 ? (
                     game.hands.north.map((card, idx) => {
@@ -1551,7 +2271,118 @@ export default function CasinoGameScreen() {
                   ) : null}
                 </View>
               </View>
+
+              {/* Opponent's Temp Deck Display */}
+              {opponentTempDeck.length > 0 && (
+                <View style={{
+                  position: 'absolute',
+                  top: 200,
+                  right: '10%',
+                  transform: [{ translateX: ((opponentTempDeck.length * 16) / 2) }],
+                  flexDirection: 'column',
+                  zIndex: 20,
+                  pointerEvents: 'none',
+                  alignItems: 'center',
+                }}>
+                  
+                  {/* Opponent Temp Deck Cards */}
+                  <View style={{ flexDirection: 'row', position: 'relative' }}>
+                    {opponentTempDeck.map((card, idx) => {
+                      // Deterministic random rotation and translation
+                      const rot = (seededRandom(idx + 1000) - 0.5) * 30; // -15 to +15 deg
+                      const tx = (seededRandom(idx + 1100) - 0.5) * 16; // -8 to +8 px
+                      const ty = (seededRandom(idx + 1200) - 0.5) * 8; // -4 to +4 px
+                      return (
+                        <View
+                          key={`opponent-tempdeck-${card.suit}-${card.value}-${idx}`}
+                          style={{
+                            position: 'absolute',
+                            left: idx * 5,
+                            zIndex: idx,
+                            transform: [
+                              { rotate: `${rot}deg` },
+                              { translateX: tx },
+                              { translateY: ty },
+                            ],
+                            shadowColor: '#000',
+                            shadowOpacity: 0.15,
+                            shadowRadius: 4,
+                            shadowOffset: { width: 0, height: 2 },
+                          }}
+                        >
+                          <CasinoCard suit={card.suit} value={card.value} style={{ width: 48, height: 68 }} />
+                        </View>
+                      );
+                    })}
+                  </View>
+                  
+                  {/* Opponent Temp Deck Sum Display */}
+                  <View style={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderRadius: 16,
+                    marginTop: 8,
+                    borderWidth: 2,
+                    borderColor: '#FF6B6B',
+                  }}>
+                    <ThemedText style={{
+                      color: '#FF6B6B',
+                      fontWeight: 'bold',
+                      fontSize: 14,
+                      textAlign: 'center',
+                    }}>
+                      {opponentTempDeckSum}
+                    </ThemedText>
+                  </View>
+                  
+                  {/* Opponent Temp Deck Label */}
+                  <View style={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                    borderRadius: 12,
+                    marginTop: 4,
+                  }}>
+                    <ThemedText style={{
+                      color: '#FF6B6B',
+                      fontWeight: 'bold',
+                      fontSize: 12,
+                      textAlign: 'center',
+                    }}>
+                      {playerNames.north}'s Build
+                    </ThemedText>
+                  </View>
+                </View>
+              )}
               
+              {/* Turn indicator */}
+              <View style={{
+                position: 'absolute',
+                top: -60,
+                left: 0,
+                right: 0,
+                alignItems: 'center',
+                zIndex: 10,
+              }}>
+                <View style={{
+                  backgroundColor: game.turn === 'south' ? 'rgba(255, 215, 0, 0.9)' : 'rgba(255, 107, 107, 0.9)',
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                  borderWidth: 2,
+                  borderColor: game.turn === 'south' ? '#FFD700' : '#FF6B6B',
+                }}>
+                  <ThemedText style={{
+                    color: game.turn === 'south' ? '#333' : '#fff',
+                    fontWeight: 'bold',
+                    fontSize: 16,
+                  }}>
+                    {game.turn === 'south' ? `${playerNames.south}'s Turn` : `${playerNames.north}'s Turn`}
+                  </ThemedText>
+                </View>
+              </View>
+
               {/* Discard and stock piles at center */}
               <View style={styles.pilesRowContainer}>
                 <ThemedText style={styles.discardHintText}>
@@ -1561,7 +2392,8 @@ export default function CasinoGameScreen() {
                   {/* Discard pile - show last 5 cards in a row, smaller size */}
                   <TouchableOpacity
                     onPress={handleDiscardPileClick}
-                    activeOpacity={0.8}
+                    activeOpacity={game.turn === 'south' ? 0.8 : 1}
+                    disabled={game.turn !== 'south'}
                     style={{
                       alignItems: 'center',
                       position: 'relative',
@@ -1569,12 +2401,24 @@ export default function CasinoGameScreen() {
                       width: '100%',
                       flexDirection: 'row',
                       borderWidth: 2,
-                      borderColor: 'rgba(255, 255, 255, 0.3)',
+                      borderColor: game.turn === 'south' ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.1)',
                       borderRadius: 12,
                       padding: 8,
-                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                      backgroundColor: game.turn === 'south' ? 'rgba(255, 255, 255, 0.05)' : 'rgba(255, 255, 255, 0.02)',
                     }}
                   >
+                    {game.turn !== 'south' && (
+                      <View style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                        borderRadius: 12,
+                        zIndex: 1,
+                      }} />
+                    )}
                     <View
                       ref={discardRef}
                       collapsable={false}
@@ -1612,7 +2456,7 @@ export default function CasinoGameScreen() {
                                 const rotation = (seededRandom(seed) - 0.5) * 8; // -4 to +4 degrees
                                 const scale = 0.95 + (seededRandom(seed + 100) * 0.1); // 0.95 to 1.05
                                 const translateY = (seededRandom(seed + 200) - 0.5) * 4; // -2 to +2 pixels
-                                
+                                const isSelected = selectedDiscardCards.includes(idx);
                                 return (
                                   <TouchableOpacity
                                     key={`discard-row1-${idx}`}
@@ -1623,12 +2467,12 @@ export default function CasinoGameScreen() {
                                     style={{ 
                                       marginLeft: idx === 0 ? 0 : -8, 
                                       zIndex: idx, 
-                                      borderWidth: selectedDiscardCards.includes(idx) ? 2 : 0, 
-                                      borderColor: selectedDiscardCards.includes(idx) ? '#FFD700' : 'transparent', 
+                                      borderWidth: 0, // Remove border
+                                      borderColor: 'transparent', // Remove border
                                       borderRadius: 8,
                                       transform: [
                                         { rotate: `${rotation}deg` },
-                                        { scale },
+                                        { scale: isSelected ? 0.85 : scale }, // Apply scale if selected
                                         { translateY }
                                       ],
                                       shadowColor: '#000',
@@ -1650,23 +2494,24 @@ export default function CasinoGameScreen() {
                                 const rotation = (seededRandom(seed) - 0.5) * 8; // -4 to +4 degrees
                                 const scale = 0.95 + (seededRandom(seed + 100) * 0.1); // 0.95 to 1.05
                                 const translateY = (seededRandom(seed + 200) - 0.5) * 4; // -2 to +2 pixels
-                                
+                                const discardIdx = halfLength + idx;
+                                const isSelected = selectedDiscardCards.includes(discardIdx);
                                 return (
                                   <TouchableOpacity
                                     key={`discard-row2-${idx}`}
                                     onPress={e => {
                                       e.stopPropagation && e.stopPropagation();
-                                      handleDiscardCardClick(halfLength + idx);
+                                      handleDiscardCardClick(discardIdx);
                                     }}
                                     style={{ 
                                       marginLeft: idx === 0 ? 0 : -8, 
                                       zIndex: idx, 
-                                      borderWidth: selectedDiscardCards.includes(halfLength + idx) ? 2 : 0, 
-                                      borderColor: selectedDiscardCards.includes(halfLength + idx) ? '#FFD700' : 'transparent', 
+                                      borderWidth: 0, // Remove border
+                                      borderColor: 'transparent', // Remove border
                                       borderRadius: 8,
                                       transform: [
                                         { rotate: `${rotation}deg` },
-                                        { scale },
+                                        { scale: isSelected ? 0.85 : scale }, // Apply scale if selected
                                         { translateY }
                                       ],
                                       shadowColor: '#000',
@@ -1689,25 +2534,14 @@ export default function CasinoGameScreen() {
                 </View>
               </View>
               
-              {/* Add to Temp Deck Button */}
-              {(selectedHandCards.length > 0 || selectedDiscardCards.length > 0) && (
-                <View style={styles.tempDeckButtonContainer}>
-                  <TouchableOpacity
-                    style={styles.addToTempDeckButton}
-                    onPress={addSelectedCardsToTempDeck}
-                    activeOpacity={0.8}
-                  >
-                    <ThemedText style={styles.addToTempDeckButtonText}>
-                      Add to Temp Deck ({selectedHandCards.length + selectedDiscardCards.length} cards)
-                    </ThemedText>
-                  </TouchableOpacity>
-                </View>
-              )}
-              
               {/* South hand (player) - moved to bottom */}
               <View style={styles.southHandContainer}>
                 <View style={{ marginRight: 8, alignSelf: 'flex-end' }}>
-                  <DeckPlaceholder style={styles.southDeckPlaceholder} text="Deck" />
+                  <DeckPlaceholder 
+                    style={styles.southDeckPlaceholder} 
+                    text="Deck" 
+                    cards={playerDeck}
+                  />
                 </View>
                 <View style={styles.southHandRow}>
                   {game.hands.south.length > 0 ? (
@@ -1735,9 +2569,11 @@ export default function CasinoGameScreen() {
                         >
                           <TouchableOpacity
                             onPress={() => handleCardSelect(idx)}
-                            disabled={game.winner !== null || game.chooseSuit || !canPlay(card, game.discard[game.discard.length - 1], game.currentSuit)}
+                            disabled={game.winner !== null || game.chooseSuit || game.turn !== 'south' || !canPlay(card, game.discard[game.discard.length - 1], game.currentSuit)}
                           >
-                            <Animated.View style={{ transform: [{ scale: selectedHandCards.includes(idx) ? 0.85 : 1 }] }}>
+                            <Animated.View style={{ 
+                              transform: [{ scale: selectedHandCards.includes(idx) ? 0.85 : 1 }]
+                            }}>
                               <CasinoCard suit={card.suit} value={card.value} style={{ width: 72, height: 104 }} />
                             </Animated.View>
                           </TouchableOpacity>
@@ -1761,56 +2597,128 @@ export default function CasinoGameScreen() {
 
               {/* In the render, above the south hand, render the tempDeck stack */}
               {gamePhase === 'playing' && localTempDeck.length > 0 && (
-                <View style={{
-                  position: 'absolute',
-                  bottom: 350,
-                  left: '10%',
-                  transform: [{ translateX: -((localTempDeck.length * 16) / 2) }],
-                  flexDirection: 'column',
-                  zIndex: 20,
-                  pointerEvents: 'none',
-                  alignItems: 'center',
-                }}>
-                  
-                  
-                  {/* Temp Deck Cards */}
-                  <View style={{ flexDirection: 'row', position: 'relative' }}>
-                    {localTempDeck.map((card, idx) => {
-                      // Deterministic random rotation and translation
-                      const rot = (seededRandom(idx + 1) - 0.5) * 30; // -15 to +15 deg
-                      const tx = (seededRandom(idx + 100) - 0.5) * 16; // -8 to +8 px
-                      const ty = (seededRandom(idx + 200) - 0.5) * 8; // -4 to +4 px
-                      return (
-                        <View
-                          key={`tempdeck-${card.suit}-${card.value}-${idx}`}
-                          style={{
-                            position: 'absolute',
-                            left: idx * 5,
-                            zIndex: idx,
-                            transform: [
-                              { rotate: `${rot}deg` },
-                              { translateX: tx },
-                              { translateY: ty },
-                            ],
-                            shadowColor: '#000',
-                            shadowOpacity: 0.15,
-                            shadowRadius: 4,
-                            shadowOffset: { width: 0, height: 2 },
-                          }}
-                        >
-                          <CasinoCard suit={card.suit} value={card.value} style={{ width: 48, height: 68 }} />
-                        </View>
-                      );
-                    })}
-                  </View>
-                </View>
+                (selectedHandCards.length > 0 || selectedDiscardCards.length > 0) ? (
+                  <TouchableOpacity
+                    style={{
+                      position: 'absolute',
+                      bottom: 350,
+                      left: '10%',
+                      transform: [{ translateX: -((localTempDeck.length * 16) / 2) }],
+                      flexDirection: 'column',
+                      zIndex: 20,
+                      pointerEvents: game.turn === 'south' ? 'auto' : 'none',
+                      alignItems: 'center',
+                    }}
+                    onPress={addSelectedCardsToTempDeck}
+                    activeOpacity={game.turn === 'south' ? 0.8 : 1}
+                    disabled={game.turn !== 'south'}
+                  >
+                    {/* Temp Deck Cards */}
+                    <View style={{ flexDirection: 'row', position: 'relative' }}>
+                      {localTempDeck.map((card, idx) => {
+                        const rot = (seededRandom(idx + 1) - 0.5) * 30;
+                        const tx = (seededRandom(idx + 100) - 0.5) * 16;
+                        const ty = (seededRandom(idx + 200) - 0.5) * 8;
+                        return (
+                          <View
+                            key={`tempdeck-${card.suit}-${card.value}-${idx}`}
+                            style={{
+                              position: 'absolute',
+                              left: idx * 5,
+                              zIndex: idx,
+                              transform: [
+                                { rotate: `${rot}deg` },
+                                { translateX: tx },
+                                { translateY: ty },
+                              ],
+                              shadowColor: '#000',
+                              shadowOpacity: 0.15,
+                              shadowRadius: 4,
+                              shadowOffset: { width: 0, height: 2 },
+                            }}
+                          >
+                            <CasinoCard suit={card.suit} value={card.value} style={{ width: 48, height: 68 }} />
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </TouchableOpacity>
+                ) : (
+                  localTempDeck.length > 0 && (
+                    <View style={{
+                      position: 'absolute',
+                      bottom: 350,
+                      left: '10%',
+                      transform: [{ translateX: -((localTempDeck.length * 16) / 2) }],
+                      flexDirection: 'column',
+                      zIndex: 20,
+                      pointerEvents: 'none',
+                      alignItems: 'center',
+                    }}>
+                      {/* Temp Deck Cards */}
+                      <View style={{ flexDirection: 'row', position: 'relative' }}>
+                        {localTempDeck.map((card, idx) => {
+                          const rot = (seededRandom(idx + 1) - 0.5) * 30;
+                          const tx = (seededRandom(idx + 100) - 0.5) * 16;
+                          const ty = (seededRandom(idx + 200) - 0.5) * 8;
+                          return (
+                            <View
+                              key={`tempdeck-${card.suit}-${card.value}-${idx}`}
+                              style={{
+                                position: 'absolute',
+                                left: idx * 5,
+                                zIndex: idx,
+                                transform: [
+                                  { rotate: `${rot}deg` },
+                                  { translateX: tx },
+                                  { translateY: ty },
+                                ],
+                                shadowColor: '#000',
+                                shadowOpacity: 0.15,
+                                shadowRadius: 4,
+                                shadowOffset: { width: 0, height: 2 },
+                              }}
+                            >
+                              <CasinoCard suit={card.suit} value={card.value} style={{ width: 48, height: 68 }} />
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  )
+                )
               )}
+
               {/* Temp Deck Sum Display */}
               <View style={styles.tempDeckSumContainer}>
                 <ThemedText style={styles.tempDeckSumText}>
                    {localTempDeckSum}
                 </ThemedText>
               </View>
+              
+              {/* Local Temp Deck Label */}
+              {localTempDeck.length > 0 && (
+                <View style={{
+                  backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                  paddingHorizontal: 8,
+                  paddingVertical: 4,
+                  borderRadius: 12,
+                  marginTop: 4,
+                  position: 'absolute',
+                  bottom: 320,
+                  left: '10%',
+                  transform: [{ translateX: -((localTempDeck.length * 16) / 2) }],
+                }}>
+                  <ThemedText style={{
+                    color: '#FFD700',
+                    fontWeight: 'bold',
+                    fontSize: 12,
+                    textAlign: 'center',
+                  }}>
+                    Your Build
+                  </ThemedText>
+                </View>
+              )}
             </>
           )}
         </LinearGradient>
@@ -1864,15 +2772,86 @@ export default function CasinoGameScreen() {
             )}
           </View>
         )}
-        {/* End Turn Button - show only if it's the local player's turn and playing phase */}
-        {gamePhase === 'playing' && game.turn === 'south' && (
-          <TouchableOpacity
-            style={styles.endTurnButton}
-            onPress={handleEndTurn}
-            activeOpacity={0.8}
-          >
-            <ThemedText style={styles.endTurnButtonText}>End Turn</ThemedText>
-          </TouchableOpacity>
+
+
+        {/* Action Buttons Row - show only if it's the local player's turn and playing phase */}
+        {gamePhase === 'playing' && game.turn === 'south' && game.winner === null && !game.chooseSuit && (
+          <View style={{
+            position: 'absolute',
+            bottom: 170,
+            left: 32,
+            flexDirection: 'row',
+            zIndex: 100,
+            alignItems: 'center',
+          }}>
+            {/* Add to Temp Deck Button */}
+            {(selectedHandCards.length > 0 || selectedDiscardCards.length > 0) && localTempDeck.length === 0 && (
+              <TouchableOpacity
+                style={{
+                  width: 64,
+                  height: 64,
+                  borderRadius: 32,
+                  backgroundColor: game.turn === 'south' ? '#FFD700' : '#666',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginRight: 16,
+                  elevation: game.turn === 'south' ? 6 : 2,
+                  shadowColor: '#000',
+                  shadowOpacity: game.turn === 'south' ? 0.18 : 0.1,
+                  shadowRadius: 6,
+                  shadowOffset: { width: 0, height: 2 },
+                }}
+                onPress={addSelectedCardsToTempDeck}
+                activeOpacity={game.turn === 'south' ? 0.85 : 1}
+                disabled={game.turn !== 'south'}
+              >
+                <MaterialIcons name="gavel" size={36} color="#333" />
+              </TouchableOpacity>
+            )}
+            
+            {/* Eat Temp Deck Button */}
+            {localTempDeck.length > 0 && (
+              <TouchableOpacity
+                style={{
+                  width: 64,
+                  height: 64,
+                  borderRadius: 32,
+                  backgroundColor: game.turn === 'south' ? '#FFB300' : '#666',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginRight: 16,
+                  elevation: game.turn === 'south' ? 8 : 2,
+                  shadowColor: '#000',
+                  shadowOpacity: game.turn === 'south' ? 0.2 : 0.1,
+                  shadowRadius: 8,
+                  shadowOffset: { width: 0, height: 4 },
+                }}
+                onPress={handleEatTempDeck}
+                activeOpacity={game.turn === 'south' ? 0.8 : 1}
+                disabled={game.turn !== 'south'}
+              >
+                <ThemedText style={{ fontSize: 32, color: '#fff' }}>😋</ThemedText>
+              </TouchableOpacity>
+            )}
+            
+            {/* End Turn Button */}
+            <TouchableOpacity
+              style={[styles.endTurnButton, {
+                backgroundColor: game.hands.south.length < handSizeAtTurnStart ? '#19C37D' : '#666',
+                elevation: game.hands.south.length < handSizeAtTurnStart ? 8 : 2,
+                shadowOpacity: game.hands.south.length < handSizeAtTurnStart ? 0.2 : 0.1,
+              }]}
+              onPress={handleEndTurn}
+              activeOpacity={game.hands.south.length < handSizeAtTurnStart ? 0.8 : 1}
+              disabled={game.turn !== 'south' || game.hands.south.length >= handSizeAtTurnStart}
+            >
+              <ThemedText style={[styles.endTurnButtonText, {
+                color: game.hands.south.length < handSizeAtTurnStart ? '#fff' : '#999'
+              }]}>
+                End Turn ({game.hands.south.length}/{handSizeAtTurnStart})
+              </ThemedText>
+            </TouchableOpacity>
+          </View>
         )}
       </ThemedView>
       
@@ -1908,68 +2887,7 @@ export default function CasinoGameScreen() {
       </Modal>
 
       {/* Card Choice Modal */}
-      <Modal
-        visible={showCardChoiceModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowCardChoiceModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <ThemedText style={styles.modalTitle}>🎯 Choose Your Build</ThemedText>
-            </View>
-            <View style={styles.modalBody}>
-              
-              <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 16 }}>
-                {cardChoiceOptions.map((option, index) => {
-                  // Calculate possible sums for this value
-                  const possibleSums = new Set<number>();
-                  possibleSums.add(option.value);
-                  if (option.cards.length >= 2 && option.value * 2 <= 10) {
-                    possibleSums.add(option.value * 2);
-                  }
-                  if (option.cards.length >= 3 && option.value * 3 <= 10) {
-                    possibleSums.add(option.value * 3);
-                  }
-                  if (option.cards.length >= 4 && option.value * 4 <= 10) {
-                    possibleSums.add(option.value * 4);
-                  }
-                  
-                  return Array.from(possibleSums).map((sum, sumIndex) => (
-                    <TouchableOpacity
-                      key={`${index}-${sumIndex}`}
-                      style={styles.cardChoiceOption}
-                      onPress={() => {
-                        // Use all cards but set the sum to the selected value
-                        handleCardChoice(sum, option.cards);
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <ThemedText style={styles.cardChoiceValue}>
-                        {sum}
-                      </ThemedText>
-                    </TouchableOpacity>
-                  ));
-                })}
-              </View>
-            </View>
-            <TouchableOpacity
-              style={[styles.modalButton, { backgroundColor: '#6b7280' }]}
-              onPress={() => {
-                setShowCardChoiceModal(false);
-                setCardChoiceOptions([]);
-                setPendingCardsToAdd([]);
-                setSelectedHandCards([]);
-                setSelectedDiscardCards([]);
-              }}
-              activeOpacity={0.8}
-            >
-              <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      {/* (Removed: No longer needed since all validation is gone) */}
     </View>
   );
   } catch (err) {
@@ -2368,9 +3286,6 @@ const styles = StyleSheet.create({
     marginRight: 24,
   },
   endTurnButton: {
-    position: 'absolute',
-    bottom: 180,
-    left: 32,
     width: 64,
     height: 64,
     borderRadius: 32,
@@ -2382,7 +3297,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
-    zIndex: 100,
   },
   endTurnButtonText: {
     color: '#fff',
@@ -2406,31 +3320,6 @@ const styles = StyleSheet.create({
     zIndex: 2,
     width: '100%',
     paddingHorizontal: 24,
-  },
-  tempDeckButtonContainer: {
-    position: 'absolute',
-    bottom: 280,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    zIndex: 100,
-  },
-  addToTempDeckButton: {
-    backgroundColor: '#FFD700',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 20,
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-  },
-  addToTempDeckButtonText: {
-    color: '#333',
-    fontWeight: 'bold',
-    fontSize: 16,
-    textAlign: 'center',
   },
   tempDeckSumContainer: {
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
