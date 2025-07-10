@@ -57,14 +57,47 @@ function shuffle(deck: Card[]): Card[] {
   return arr;
 }
 
-// Update DeckPlaceholder to accept props for size, text, and cards
-function DeckPlaceholder({ text = 'Deck Empty', style = {}, cards = [] }: { text?: string; style?: any; cards?: Card[] }) {
+// Update DeckPlaceholder to not render anything if cards.length === 0
+function DeckPlaceholder({ 
+  text = 'Deck Empty', 
+  style = {}, 
+  cards = [], 
+  isSelectable = false, 
+  isSelected = false, 
+  onCardPress = null 
+}: { 
+  text?: string; 
+  style?: any; 
+  cards?: Card[]; 
+  isSelectable?: boolean;
+  isSelected?: boolean;
+  onCardPress?: (() => void) | null;
+}) {
+  if (!cards || cards.length === 0) return null;
+  
+  console.log('[DeckPlaceholder] Rendering with props:', {
+    cardsLength: cards.length,
+    isSelectable,
+    isSelected,
+    hasOnCardPress: !!onCardPress,
+    cards: cards.slice(0, 3).map(c => `${c.value}${c.suit}`) // Log first 3 cards
+  });
+  
   return (
     <View style={[styles.deckPlaceholderSingle, style]}>
-      {cards.length > 0 ? (
-        // Show actual deck cards as a stacked pile
-        <View style={{ position: 'relative', alignItems: 'center' }}>
-          {cards.slice(0, 5).map((card, idx) => (
+      {/* Show actual deck cards as a stacked pile */}
+      <View style={{ position: 'relative', alignItems: 'center' }}>
+        {cards.slice(0, 5).map((card, idx) => {
+          const isTopCard = idx === 0;
+          const shouldBeSelectable = isSelectable && isTopCard;
+          
+          console.log(`[DeckPlaceholder] Card ${idx}:`, {
+            isTopCard,
+            shouldBeSelectable,
+            card: `${card.value}${card.suit}`
+          });
+          
+          const cardElement = (
             <View
               key={`deck-card-${idx}`}
               style={{
@@ -72,12 +105,18 @@ function DeckPlaceholder({ text = 'Deck Empty', style = {}, cards = [] }: { text
                 left: idx * 2, // Small horizontal spill
                 top: idx * 1,  // Small vertical spill
                 zIndex: idx,
-                transform: [{ rotate: `${(idx - 2) * 2}deg` }], // Slight rotation for natural look
+                transform: [
+                  { rotate: `${(idx - 2) * 2}deg` }, // Slight rotation for natural look
+                  { scale: isSelected && isTopCard ? 0.85 : 1 } // Scale down if selected
+                ],
                 shadowColor: '#000',
                 shadowOffset: { width: 0, height: 2 },
                 shadowOpacity: 0.1,
                 shadowRadius: 3,
                 elevation: idx,
+                borderWidth: isSelected && isTopCard ? 3 : 0,
+                borderColor: '#FFD700',
+                borderRadius: 10,
               }}
             >
               <CasinoCard 
@@ -86,37 +125,40 @@ function DeckPlaceholder({ text = 'Deck Empty', style = {}, cards = [] }: { text
                 style={{ width: 48, height: 68 }}
               />
             </View>
-          ))}
-          {cards.length > 5 && (
-            <View style={{
-              position: 'absolute',
-              left: 5 * 2 + 4,
-              top: 5 * 1 + 2,
-              zIndex: 5,
-              backgroundColor: 'rgba(0, 0, 0, 0.8)',
-              borderRadius: 10,
-              paddingHorizontal: 8,
-              paddingVertical: 4,
-              borderWidth: 1,
-              borderColor: 'rgba(255, 255, 255, 0.3)',
-            }}>
-              <ThemedText style={{
-                color: '#fff',
-                fontSize: 11,
-                fontWeight: 'bold',
-              }}>
-                +{cards.length - 5}
-              </ThemedText>
-            </View>
-          )}
-        </View>
-      ) : (
-        // Show empty placeholder
-        <View style={styles.deckPlaceholderCard} />
-      )}
-      <ThemedText style={styles.deckPlaceholderText}>
-        {cards.length > 0 ? `Deck (${cards.length})` : text}
-      </ThemedText>
+          );
+
+          if (shouldBeSelectable && onCardPress) {
+            console.log(`[DeckPlaceholder] Making card ${idx} selectable`);
+            return (
+              <TouchableOpacity
+                key={`deck-card-${idx}`}
+                onPress={onCardPress}
+                activeOpacity={0.8}
+                style={{
+                  position: 'absolute',
+                  left: idx * 2,
+                  top: idx * 1,
+                  zIndex: 1000, // Higher z-index to ensure it's on top
+                  width: 60, // Explicit width for better touch area
+                  height: 80, // Explicit height for better touch area
+                  backgroundColor: 'transparent', // Transparent background
+                }}
+              >
+                {cardElement}
+              </TouchableOpacity>
+            );
+          } else {
+            console.log(`[DeckPlaceholder] Card ${idx} NOT selectable:`, {
+              shouldBeSelectable,
+              hasOnCardPress: !!onCardPress,
+              isSelectable,
+              isTopCard
+            });
+          }
+
+          return cardElement;
+        })}
+      </View>
     </View>
   );
 }
@@ -368,12 +410,22 @@ export default function CasinoGameScreen() {
             isSyncingToFirebase.current = false;
           }, 200);
           
-          // Update hand size at turn start when it becomes our turn
+          // Update hand size at turn start when it becomes our turn (turn changes TO south)
           if (newGameState.turn === 'south' && game.turn !== 'south') {
             console.log('[FIREBASE SYNC] Setting hand size at turn start:', {
               oldTurn: game.turn,
               newTurn: newGameState.turn,
               handSize: newGameState.hands.south.length
+            });
+            setHandSizeAtTurnStart(newGameState.hands.south.length);
+          }
+          
+          // Also set hand size at turn start if it's our turn and handSizeAtTurnStart is still 0 (initial load)
+          // BUT only if we're not in the middle of syncing our own changes
+          if (newGameState.turn === 'south' && handSizeAtTurnStart === 0 && newGameState.hands.south.length > 0 && !isSyncingToFirebase.current) {
+            console.log('[FIREBASE SYNC] Initial load - setting hand size at turn start:', {
+              handSize: newGameState.hands.south.length,
+              currentHandSizeAtTurnStart: handSizeAtTurnStart
             });
             setHandSizeAtTurnStart(newGameState.hands.south.length);
           }
@@ -1156,6 +1208,13 @@ export default function CasinoGameScreen() {
   const northTempDeckToDeckY = useSharedValue(0);
   const northTempDeckToDeckScale = useSharedValue(1);
 
+  // Animation for north deck to temp deck
+  const [showNorthDeckToTempDeckAnimation, setShowNorthDeckToTempDeckAnimation] = useState(false);
+  const [animatingNorthDeckCardsToTempDeck, setAnimatingNorthDeckCardsToTempDeck] = useState<Card[]>([]);
+  const northDeckToTempDeckX = useSharedValue(0);
+  const northDeckToTempDeckY = useSharedValue(0);
+  const northDeckToTempDeckScale = useSharedValue(1);
+
   const discardToTempDeckAnimStyle = useAnimatedStyle(() => ({
     left: discardToTempDeckX.value - 36,
     top: discardToTempDeckY.value - 52,
@@ -1179,8 +1238,15 @@ export default function CasinoGameScreen() {
 
   const northTempDeckToDeckAnimStyle = useAnimatedStyle(() => ({
     left: northTempDeckToDeckX.value - 36,
-    top: northTempDeckToDeckY.value - 52,
+    top: northTempDeckToDeckY.value - 20,
     transform: [{ scale: northTempDeckToDeckScale.value }],
+    opacity: 1,
+  }));
+
+  const northDeckToTempDeckAnimStyle = useAnimatedStyle(() => ({
+    left: northDeckToTempDeckX.value - 36,
+    top: northDeckToTempDeckY.value - 20,
+    transform: [{ scale: northDeckToTempDeckScale.value }],
     opacity: 1,
   }));
 
@@ -1276,6 +1342,50 @@ export default function CasinoGameScreen() {
     });
   }
 
+  function animateNorthDeckToTempDeck(cards: Card[]) {
+    console.log('[ANIMATE] animateNorthDeckToTempDeck called with cards:', cards);
+    
+    if (cards.length === 0) {
+      console.log('[ANIMATE] No cards to animate, returning early');
+      return;
+    }
+    
+    setAnimatingNorthDeckCardsToTempDeck(cards);
+    setShowNorthDeckToTempDeckAnimation(true);
+    console.log('[ANIMATE] North deck animation state set, starting animation...');
+    
+    InteractionManager.runAfterInteractions(() => {
+      // Start position: north deck area (top left)
+      const startX = width * 0.1;
+      const startY = 100;
+      
+      // End position: temp deck area (bottom left)
+      const endX = width * 0.1;
+      const endY = height - 350;
+      
+      console.log('[ANIMATE] North deck to temp deck animation coordinates:', { startX, startY, endX, endY });
+      
+      // Set initial position
+      northDeckToTempDeckX.value = startX;
+      northDeckToTempDeckY.value = startY;
+      northDeckToTempDeckScale.value = 1;
+      
+      // Animate to temp deck position with scale effect
+      northDeckToTempDeckX.value = withTiming(endX, { duration: 1200 });
+      northDeckToTempDeckY.value = withTiming(endY, { duration: 1200 });
+      northDeckToTempDeckScale.value = withTiming(0.8, { duration: 600 }, () => {
+        northDeckToTempDeckScale.value = withTiming(0.6, { duration: 600 }, (finished) => {
+          if (finished) {
+            runOnJS(setShowNorthDeckToTempDeckAnimation)(false);
+            runOnJS(setAnimatingNorthDeckCardsToTempDeck)([]);
+          }
+        });
+      });
+      
+      console.log('[ANIMATE] North deck to temp deck animation started');
+    });
+  }
+
 
 
 
@@ -1288,6 +1398,7 @@ export default function CasinoGameScreen() {
   // Track selected cards for temp deck building
   const [selectedHandCards, setSelectedHandCards] = useState<number[]>([]);
   const [selectedDiscardCards, setSelectedDiscardCards] = useState<number[]>([]);
+  const [selectedNorthDeckCard, setSelectedNorthDeckCard] = useState<boolean>(false);
 
   // Add state for card choice modal
   const [showCardChoiceModal, setShowCardChoiceModal] = useState(false);
@@ -1324,12 +1435,14 @@ export default function CasinoGameScreen() {
     }
     
     // Check if player has played at least one card (hand size decreased)
-    if (game.hands.south.length >= handSizeAtTurnStart) {
+    const effectiveHandSizeAtTurnStart = handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length;
+    if (game.hands.south.length >= effectiveHandSizeAtTurnStart) {
       console.log('[handleEndTurn] Hand size not decreased, cannot end turn');
       console.log('[handleEndTurn] Hand size details:', {
         currentHandSize: game.hands.south.length,
         handSizeAtTurnStart,
-        difference: handSizeAtTurnStart - game.hands.south.length
+        effectiveHandSizeAtTurnStart,
+        difference: effectiveHandSizeAtTurnStart - game.hands.south.length
       });
       Alert.alert('Cannot End Turn', 'You must play at least one card before ending your turn.');
       return;
@@ -1348,6 +1461,7 @@ export default function CasinoGameScreen() {
     // Clear selections and reset turn-specific states
     setSelectedHandCards([]);
     setSelectedDiscardCards([]);
+    setSelectedNorthDeckCard(false);
     
     // Update Firebase with the new game state while preserving all existing values
     try {
@@ -1400,13 +1514,14 @@ export default function CasinoGameScreen() {
     console.log('[addSelectedCardsToTempDeck] Current state:', {
       selectedHandCards,
       selectedDiscardCards,
+      selectedNorthDeckCard,
       gameTurn: game.turn,
       handSize: game.hands.south.length,
       handSizeAtTurnStart,
-      canEndTurn: game.hands.south.length < handSizeAtTurnStart
+      canEndTurn: game.hands.south.length < (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length)
     });
     
-    if (selectedHandCards.length === 0 && selectedDiscardCards.length === 0) {
+    if (selectedHandCards.length === 0 && selectedDiscardCards.length === 0 && !selectedNorthDeckCard) {
       console.log('[addSelectedCardsToTempDeck] No cards selected');
       return;
     }
@@ -1418,7 +1533,8 @@ export default function CasinoGameScreen() {
     // Get all selected cards
     const selectedHandCardObjects = selectedHandCards.map(idx => game.hands.south[idx]).filter(Boolean);
     const selectedDiscardCardObjects = selectedDiscardCards.map(idx => game.discard[idx]).filter(Boolean);
-    const allSelectedCards = [...selectedHandCardObjects, ...selectedDiscardCardObjects];
+    const selectedNorthDeckCardObject = selectedNorthDeckCard && opponentDeck.length > 0 ? [opponentDeck[0]] : [];
+    const allSelectedCards = [...selectedHandCardObjects, ...selectedDiscardCardObjects, ...selectedNorthDeckCardObject];
     if (allSelectedCards.length === 0) {
       console.log('[addSelectedCardsToTempDeck] No valid cards found');
       return;
@@ -1434,18 +1550,25 @@ export default function CasinoGameScreen() {
   async function addCardsToTempDeck(cardsToAdd: Card[], newTempDeckSum: number) {
     console.log('[addCardsToTempDeck] Adding cards to temp deck:', cardsToAdd, 'sum:', newTempDeckSum);
     
-    // Separate hand cards from discard cards
+    // Separate hand cards from discard cards and north deck cards
     const discardCardKeys = new Set(game.discard.map(card => `${card.suit}-${card.value}`));
-    const handCards = cardsToAdd.filter(card => !discardCardKeys.has(`${card.suit}-${card.value}`));
+    const northDeckCardKeys = new Set(opponentDeck.map(card => `${card.suit}-${card.value}`));
+    const handCards = cardsToAdd.filter(card => !discardCardKeys.has(`${card.suit}-${card.value}`) && !northDeckCardKeys.has(`${card.suit}-${card.value}`));
     const discardCards = cardsToAdd.filter(card => discardCardKeys.has(`${card.suit}-${card.value}`));
+    const northDeckCards = cardsToAdd.filter(card => northDeckCardKeys.has(`${card.suit}-${card.value}`));
     
-    console.log('[addCardsToTempDeck] Hand cards:', handCards, 'Discard cards:', discardCards);
+    console.log('[addCardsToTempDeck] Hand cards:', handCards, 'Discard cards:', discardCards, 'North deck cards:', northDeckCards);
     
 
     
     // Animate discard cards to temp deck
     if (discardCards.length > 0) {
       animateDiscardToTempDeck(discardCards);
+    }
+
+    // Animate north deck cards to temp deck
+    if (northDeckCards.length > 0) {
+      animateNorthDeckToTempDeck(northDeckCards);
     }
     
     if (currentGameId && isPlayer1 !== null) {
@@ -1454,14 +1577,17 @@ export default function CasinoGameScreen() {
       const gameDocRef = doc(db, 'games', currentGameId);
       let tempDeck: Card[] = [];
       let otherTempDeck: Card[] = [];
+      let otherDeck: Card[] = [];
       try {
         const docSnap = await getDoc(gameDocRef);
         if (docSnap.exists()) {
           tempDeck = docSnap.data()?.players?.[playerKey]?.tempDeck || [];
           otherTempDeck = docSnap.data()?.players?.[otherPlayerKey]?.tempDeck || [];
+          otherDeck = docSnap.data()?.players?.[otherPlayerKey]?.deck || [];
         }
       } catch {}
       const newTempDeck = [...tempDeck, ...cardsToAdd];
+      
       // Remove cards from hand
       const newHand = [...game.hands.south];
       const cardsToRemove = new Map<string, number>();
@@ -1479,6 +1605,7 @@ export default function CasinoGameScreen() {
           remainingHandCards.push(card);
         }
       });
+      
       // Remove cards from discard
       const newDiscard = [...game.discard];
       const remainingDiscardCards: Card[] = [];
@@ -1491,10 +1618,25 @@ export default function CasinoGameScreen() {
           remainingDiscardCards.push(card);
         }
       });
+
+      // Remove cards from north deck
+      const newNorthDeck = [...otherDeck];
+      const remainingNorthDeckCards: Card[] = [];
+      newNorthDeck.forEach(card => {
+        const key = `${card.suit}-${card.value}`;
+        const count = cardsToRemove.get(key) || 0;
+        if (count > 0) {
+          cardsToRemove.set(key, count - 1);
+        } else {
+          remainingNorthDeckCards.push(card);
+        }
+      });
+      
           await updateDoc(gameDocRef, {
       [`players.${playerKey}.tempDeck`]: newTempDeck,
       [`players.${playerKey}.tempDeckSum`]: newTempDeckSum,
       [`players.${otherPlayerKey}.tempDeck`]: otherTempDeck,
+      [`players.${otherPlayerKey}.deck`]: remainingNorthDeckCards,
       [`players.player1.hand`]: isPlayer1 ? remainingHandCards : game.hands.north,
       [`players.player2.hand`]: isPlayer1 ? game.hands.north : remainingHandCards,
       discardPile: remainingDiscardCards,
@@ -1511,7 +1653,7 @@ export default function CasinoGameScreen() {
       handSizeAtTurnStart,
       newHandSize: remainingHandCards.length,
       cardsAdded: cardsToAdd.length,
-      canEndTurn: remainingHandCards.length < handSizeAtTurnStart
+      canEndTurn: remainingHandCards.length < (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : remainingHandCards.length)
     });
     
     // Update local game state to reflect the hand changes immediately
@@ -1528,13 +1670,14 @@ export default function CasinoGameScreen() {
       console.log('[addCardsToTempDeck] New game state:', {
         handSize: newGame.hands.south.length,
         handSizeAtTurnStart: handSizeAtTurnStart,
-        canEndTurn: newGame.hands.south.length < handSizeAtTurnStart
+        canEndTurn: newGame.hands.south.length < (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : newGame.hands.south.length)
       });
       return newGame;
     });
   }
   setSelectedHandCards([]);
   setSelectedDiscardCards([]);
+  setSelectedNorthDeckCard(false);
   }
 
   // Update handleCardSelect for single card selection
@@ -1546,9 +1689,11 @@ export default function CasinoGameScreen() {
     if (selectedHandCards.includes(idx)) {
       setSelectedHandCards([]);
       setSelectedDiscardCards([]);
+      setSelectedNorthDeckCard(false);
     } else {
       setSelectedHandCards([idx]);
       setSelectedDiscardCards([]);
+      setSelectedNorthDeckCard(false);
     }
   }
 
@@ -1559,9 +1704,46 @@ export default function CasinoGameScreen() {
     if (selectedDiscardCards.includes(discardIdx)) {
       setSelectedDiscardCards([]);
       setSelectedHandCards([]);
+      setSelectedNorthDeckCard(false);
     } else {
       setSelectedDiscardCards([discardIdx]);
       setSelectedHandCards([]);
+      setSelectedNorthDeckCard(false);
+    }
+  }
+
+  // Handle north deck card selection
+  function handleNorthDeckCardClick() {
+    console.log('[handleNorthDeckCardClick] Called with conditions:', {
+      gamePhase,
+      winner: game.winner,
+      chooseSuit: game.chooseSuit,
+      turn: game.turn,
+      opponentDeckLength: opponentDeck.length,
+      selectedNorthDeckCard
+    });
+    
+    if (gamePhase !== 'playing' || game.winner !== null || game.chooseSuit || game.turn !== 'south') {
+      console.log('[handleNorthDeckCardClick] Early return due to game conditions');
+      return;
+    }
+    
+    if (opponentDeck.length === 0) {
+      console.log('[handleNorthDeckCardClick] Early return - opponent deck is empty');
+      return;
+    }
+    
+    // Only allow one card to be selected at a time
+    if (selectedNorthDeckCard) {
+      console.log('[handleNorthDeckCardClick] Deselecting north deck card');
+      setSelectedNorthDeckCard(false);
+      setSelectedHandCards([]);
+      setSelectedDiscardCards([]);
+    } else {
+      console.log('[handleNorthDeckCardClick] Selecting north deck card');
+      setSelectedNorthDeckCard(true);
+      setSelectedHandCards([]);
+      setSelectedDiscardCards([]);
     }
   }
 
@@ -2143,6 +2325,31 @@ export default function CasinoGameScreen() {
         </Animated.View>
       )}
 
+      {/* Animation for north deck to temp deck */}
+      {showNorthDeckToTempDeckAnimation && animatingNorthDeckCardsToTempDeck.length > 0 && (
+        <Animated.View
+          style={[
+            {
+              position: 'absolute',
+              zIndex: 1000,
+              pointerEvents: 'none',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3,
+              shadowRadius: 8,
+              elevation: 8,
+            },
+            northDeckToTempDeckAnimStyle
+          ]}
+        >
+          <CasinoCard 
+            suit={animatingNorthDeckCardsToTempDeck[0].suit} 
+            value={animatingNorthDeckCardsToTempDeck[0].value} 
+            style={{ width: 72, height: 104 }}
+          />
+        </Animated.View>
+      )}
+
 
 
       {/* Box animation demo (like the test page) */}
@@ -2234,24 +2441,17 @@ export default function CasinoGameScreen() {
               {/* North hand (opponent) */}
               <View style={styles.northHandContainer}>
                 <View style={styles.northHandRow}>
-                  <View style={{ marginRight: 8 }}>
-                    <DeckPlaceholder 
-                      style={styles.northDeckPlaceholder} 
-                      text="Deck" 
-                      cards={opponentDeck}
-                    />
-                  </View>
+                  {/* Hand cards (centered) */}
                   {game.hands.north.length > 0 ? (
                     game.hands.north.map((card, idx) => {
                       const totalCards = game.hands.north.length;
-                      const maxRotation = 12; // Maximum rotation in degrees
+                      const maxRotation = 12;
                       let rotation = 0;
                       if (totalCards === 1) {
                         rotation = 0;
                       } else if (totalCards === 2) {
                         rotation = idx === 0 ? -maxRotation : maxRotation;
                       } else if (totalCards > 2) {
-                        // Spread from -maxRotation to +maxRotation
                         rotation = -maxRotation + (2 * maxRotation * idx) / (totalCards - 1);
                       }
                       return (
@@ -2270,31 +2470,53 @@ export default function CasinoGameScreen() {
                     })
                   ) : null}
                 </View>
+                {/* Deck below, left-aligned */}
+                <View style={styles.northDeckRow}>
+                  {(() => {
+                    const isSelectable = game.turn === 'south' && gamePhase === 'playing' && game.winner === null && !game.chooseSuit;
+                    console.log('[NORTH DECK] Rendering with props:', {
+                      opponentDeckLength: opponentDeck.length,
+                      isSelectable,
+                      selectedNorthDeckCard,
+                      gameTurn: game.turn,
+                      gamePhase,
+                      winner: game.winner,
+                      chooseSuit: game.chooseSuit
+                    });
+                    return (
+                      <DeckPlaceholder 
+                        style={styles.northDeckPlaceholder} 
+                        text="Deck" 
+                        cards={opponentDeck}
+                        isSelectable={isSelectable}
+                        isSelected={selectedNorthDeckCard}
+                        onCardPress={handleNorthDeckCardClick}
+                      />
+                    );
+                  })()}
+                </View>
               </View>
 
-              {/* Opponent's Temp Deck Display */}
-              {opponentTempDeck.length > 0 && (
+              {/* North temp deck display */}
+              {gamePhase === 'playing' && opponentTempDeck.length > 0 && (
                 <View style={{
                   position: 'absolute',
                   top: 200,
-                  right: '10%',
+                  right: '25%',
                   transform: [{ translateX: ((opponentTempDeck.length * 16) / 2) }],
                   flexDirection: 'column',
                   zIndex: 20,
-                  pointerEvents: 'none',
                   alignItems: 'center',
                 }}>
-                  
-                  {/* Opponent Temp Deck Cards */}
+                  {/* Temp Deck Cards */}
                   <View style={{ flexDirection: 'row', position: 'relative' }}>
                     {opponentTempDeck.map((card, idx) => {
-                      // Deterministic random rotation and translation
-                      const rot = (seededRandom(idx + 1000) - 0.5) * 30; // -15 to +15 deg
-                      const tx = (seededRandom(idx + 1100) - 0.5) * 16; // -8 to +8 px
-                      const ty = (seededRandom(idx + 1200) - 0.5) * 8; // -4 to +4 px
+                      const rot = (seededRandom(idx + 1000) - 0.5) * 30;
+                      const tx = (seededRandom(idx + 1100) - 0.5) * 16;
+                      const ty = (seededRandom(idx + 1200) - 0.5) * 8;
                       return (
                         <View
-                          key={`opponent-tempdeck-${card.suit}-${card.value}-${idx}`}
+                          key={`north-tempdeck-${card.suit}-${card.value}-${idx}`}
                           style={{
                             position: 'absolute',
                             left: idx * 5,
@@ -2315,47 +2537,18 @@ export default function CasinoGameScreen() {
                       );
                     })}
                   </View>
-                  
-                  {/* Opponent Temp Deck Sum Display */}
-                  <View style={{
-                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                    paddingHorizontal: 12,
-                    paddingVertical: 6,
-                    borderRadius: 16,
-                    marginTop: 8,
-                    borderWidth: 2,
-                    borderColor: '#FF6B6B',
-                  }}>
-                    <ThemedText style={{
-                      color: '#FF6B6B',
-                      fontWeight: 'bold',
-                      fontSize: 14,
-                      textAlign: 'center',
-                    }}>
+                  {/* Temp Deck Sum Display */}
+                  <View style={[styles.tempDeckSumContainer, { marginTop: 8 }]}>
+                    <ThemedText style={styles.tempDeckSumText}>
                       {opponentTempDeckSum}
-                    </ThemedText>
-                  </View>
-                  
-                  {/* Opponent Temp Deck Label */}
-                  <View style={{
-                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    borderRadius: 12,
-                    marginTop: 4,
-                  }}>
-                    <ThemedText style={{
-                      color: '#FF6B6B',
-                      fontWeight: 'bold',
-                      fontSize: 12,
-                      textAlign: 'center',
-                    }}>
-                      {playerNames.north}'s Build
                     </ThemedText>
                   </View>
                 </View>
               )}
+
               
+             
+            
               {/* Turn indicator */}
               <View style={{
                 position: 'absolute',
@@ -2386,7 +2579,10 @@ export default function CasinoGameScreen() {
               {/* Discard and stock piles at center */}
               <View style={styles.pilesRowContainer}>
                 <ThemedText style={styles.discardHintText}>
-                  {selectedHandCards.length > 0 ? 'Tap discard pile to play card' : 'Select cards to play or add to temp deck'}
+                  {selectedHandCards.length > 0 ? 'Tap discard pile to play card' : 
+                   selectedDiscardCards.length > 0 ? 'Tap discard pile to play card' :
+                   selectedNorthDeckCard ? 'Tap temp deck to add north deck card' :
+                   'Select cards to play or add to temp deck'}
                 </ThemedText>
                 <View style={styles.pilesRow}>
                   {/* Discard pile - show last 5 cards in a row, smaller size */}
@@ -2536,7 +2732,8 @@ export default function CasinoGameScreen() {
               
               {/* South hand (player) - moved to bottom */}
               <View style={styles.southHandContainer}>
-                <View style={{ marginRight: 8, alignSelf: 'flex-end' }}>
+                {/* Deck: absolutely positioned above the hand row, right-aligned */}
+                <View style={styles.southDeckAbsolute}>
                   <DeckPlaceholder 
                     style={styles.southDeckPlaceholder} 
                     text="Deck" 
@@ -2544,17 +2741,17 @@ export default function CasinoGameScreen() {
                   />
                 </View>
                 <View style={styles.southHandRow}>
+                  {/* Hand cards (centered) */}
                   {game.hands.south.length > 0 ? (
                     game.hands.south.map((card, idx) => {
                       const totalCards = game.hands.south.length;
-                      const maxRotation = 12; // Maximum rotation in degrees
+                      const maxRotation = 12;
                       let rotation = 0;
                       if (totalCards === 1) {
                         rotation = 0;
                       } else if (totalCards === 2) {
                         rotation = idx === 0 ? -maxRotation : maxRotation;
                       } else if (totalCards > 2) {
-                        // Spread from -maxRotation to +maxRotation
                         rotation = -maxRotation + (2 * maxRotation * idx) / (totalCards - 1);
                       }
                       return (
@@ -2597,7 +2794,7 @@ export default function CasinoGameScreen() {
 
               {/* In the render, above the south hand, render the tempDeck stack */}
               {gamePhase === 'playing' && localTempDeck.length > 0 && (
-                (selectedHandCards.length > 0 || selectedDiscardCards.length > 0) ? (
+                (selectedHandCards.length > 0 || selectedDiscardCards.length > 0 || selectedNorthDeckCard) ? (
                   <TouchableOpacity
                     style={{
                       position: 'absolute',
@@ -2696,29 +2893,7 @@ export default function CasinoGameScreen() {
                 </ThemedText>
               </View>
               
-              {/* Local Temp Deck Label */}
-              {localTempDeck.length > 0 && (
-                <View style={{
-                  backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                  paddingHorizontal: 8,
-                  paddingVertical: 4,
-                  borderRadius: 12,
-                  marginTop: 4,
-                  position: 'absolute',
-                  bottom: 320,
-                  left: '10%',
-                  transform: [{ translateX: -((localTempDeck.length * 16) / 2) }],
-                }}>
-                  <ThemedText style={{
-                    color: '#FFD700',
-                    fontWeight: 'bold',
-                    fontSize: 12,
-                    textAlign: 'center',
-                  }}>
-                    Your Build
-                  </ThemedText>
-                </View>
-              )}
+              
             </>
           )}
         </LinearGradient>
@@ -2785,7 +2960,7 @@ export default function CasinoGameScreen() {
             alignItems: 'center',
           }}>
             {/* Add to Temp Deck Button */}
-            {(selectedHandCards.length > 0 || selectedDiscardCards.length > 0) && localTempDeck.length === 0 && (
+            {(selectedHandCards.length > 0 || selectedDiscardCards.length > 0 || selectedNorthDeckCard) && localTempDeck.length === 0 && (
               <TouchableOpacity
                 style={{
                   width: 64,
@@ -2837,18 +3012,18 @@ export default function CasinoGameScreen() {
             {/* End Turn Button */}
             <TouchableOpacity
               style={[styles.endTurnButton, {
-                backgroundColor: game.hands.south.length < handSizeAtTurnStart ? '#19C37D' : '#666',
-                elevation: game.hands.south.length < handSizeAtTurnStart ? 8 : 2,
-                shadowOpacity: game.hands.south.length < handSizeAtTurnStart ? 0.2 : 0.1,
+                backgroundColor: game.hands.south.length < (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length) ? '#19C37D' : '#666',
+                elevation: game.hands.south.length < (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length) ? 8 : 2,
+                shadowOpacity: game.hands.south.length < (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length) ? 0.2 : 0.1,
               }]}
               onPress={handleEndTurn}
-              activeOpacity={game.hands.south.length < handSizeAtTurnStart ? 0.8 : 1}
-              disabled={game.turn !== 'south' || game.hands.south.length >= handSizeAtTurnStart}
+              activeOpacity={game.hands.south.length < (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length) ? 0.8 : 1}
+              disabled={game.turn !== 'south' || game.hands.south.length >= (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length)}
             >
               <ThemedText style={[styles.endTurnButtonText, {
-                color: game.hands.south.length < handSizeAtTurnStart ? '#fff' : '#999'
+                color: game.hands.south.length < (handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length) ? '#fff' : '#999'
               }]}>
-                End Turn ({game.hands.south.length}/{handSizeAtTurnStart})
+                End Turn ({game.hands.south.length}/{handSizeAtTurnStart > 0 ? handSizeAtTurnStart : game.hands.south.length})
               </ThemedText>
             </TouchableOpacity>
           </View>
@@ -2992,18 +3167,20 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 3,
-    alignItems: 'flex-start',
+    alignItems: 'center',
   },
   northHandRow: {
     flexDirection: 'row',
-    width: '100%',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 0,
-    zIndex: 2,
-    height: 134,
-    paddingLeft: 0,
-    marginLeft: 0,
+    width: '100%',
+  },
+  northDeckRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start', // left align
+    width: '100%',
+    marginTop: 4,
+    marginLeft: 24, // optional: add some left margin
   },
   southHandContainer: {
     position: 'absolute',
@@ -3013,15 +3190,17 @@ const styles = StyleSheet.create({
     zIndex: 3,
     alignItems: 'center',
   },
+  southDeckAbsolute: {
+    position: 'absolute',
+    right: 50,
+    bottom: 180, // adjust as needed to sit above the hand row
+    zIndex: 10,
+  },
   southHandRow: {
     flexDirection: 'row',
-    width: '100%',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 3,
-    height: 134,
-    marginTop: 8,
-    padding: 12,
+    width: '100%',
   },
   playerNameTop: {
     position: 'absolute',
